@@ -108,6 +108,8 @@ def resave_data(source_path, parameter_combinations, index, eva, name,
         The path to the folder where the raw simulation data is stored
     save_path : string
         The path to the folder where the processed results are saved
+        if none is given, save_path defaults to ./data to ensure upward
+        compatibility.
     parameter_combinations : list
         A list of tuples of each parameter combination to resave
     index : dict as {position at parameter_combination : <name>}
@@ -127,7 +129,7 @@ def resave_data(source_path, parameter_combinations, index, eva, name,
 
     # default save_path to source_path if not save_path is given
     if save_path == None:
-        save_path = source_path
+        save_path = "./data"
 
     # create save_path if it is not yet existing
     if not os.path.exists(save_path):
