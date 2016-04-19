@@ -1,6 +1,8 @@
 """
 Provides functionality to visualize the outcome of computer experiment
 """
+import maptplotlib as mpl
+mpl.use('Agg')
 import matplotlib.pyplot as plt
 import numpy as np
 import matplotlib as mpl
