@@ -96,7 +96,7 @@ def compute(run_func, parameter_combinations, sample_size, save_path,
 
 #TODO: needs more efficient resave handling for every large runs / experiments
 def resave_data(source_path, parameter_combinations, index, eva, name,
-                sample_size=None, badmisskey=None, save_path=None):
+                sample_size=None, badmisskey=None, save_path="./data"):
     """
     Resaves the computed "micro" data to smaller files that stores only "macro"
     quanteties of interest. If a save_path is given, the pickled procecced data
@@ -106,10 +106,6 @@ def resave_data(source_path, parameter_combinations, index, eva, name,
     ----------
     source_path : string
         The path to the folder where the raw simulation data is stored
-    save_path : string
-        The path to the folder where the processed results are saved
-        if none is given, save_path defaults to ./data to ensure upward
-        compatibility.
     parameter_combinations : list
         A list of tuples of each parameter combination to resave
     index : dict as {position at parameter_combination : <name>}
@@ -123,13 +119,13 @@ def resave_data(source_path, parameter_combinations, index, eva, name,
         The number of samples to use [Default: None (means: Use all samples)]
     badmisskey : string (optional)
         key that misses in the result dictionaries for badruns (Default: None)
+    save_path : string
+        The path to the folder where the processed results are saved
+        if none is given, save_path defaults to ./data to ensure upward
+        compatibility.
     """
     # add "/" to save_path if it does not end already with a "/"
     source_path += "/" if not source_path.endswith("/") else ""
-
-    # default save_path to source_path if not save_path is given
-    if save_path == None:
-        save_path = "./data"
 
     # create save_path if it is not yet existing
     if not os.path.exists(save_path):
