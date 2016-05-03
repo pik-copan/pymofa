@@ -1,6 +1,8 @@
 """
 Provides functionality to visualize the outcome of computer experiment
 """
+import matplotlib as mpl
+mpl.use('Agg')
 import matplotlib.pyplot as plt
 import numpy as np
 import matplotlib as mpl
@@ -38,7 +40,7 @@ def explore_Parameterspace(TwoDFrame, title="",
     values = TwoDFrame.values
 
     X, Y = _create_meshgrid(xparams, yparams)
-    plt.figure()
+    fig = plt.figure()
     c = plt.pcolormesh(X, Y, values, cmap=cmap, vmin=vmin, vmax=vmax)
     plt.colorbar(c, orientation="vertical")
     plt.xlim(np.min(X), np.max(X))
@@ -47,6 +49,8 @@ def explore_Parameterspace(TwoDFrame, title="",
     plt.ylabel(TwoDFrame.index.name)
     plt.title(title)
     plt.tight_layout()
+
+    return fig 
 
 # TODO: Explore Parameterspace3D
 # see: http://matplotlib.org/examples/mplot3d/contour3d_demo3.html
