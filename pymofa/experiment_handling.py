@@ -252,8 +252,9 @@ def _get_ID(parameter_combination, i):
 
     res = str(parameter_combination)  # convert to sting
     res = res[1:-1]  # delete brackets
-    res = res.replace(", ", "_")  # replace ", " with "_"
-    res = res.replace(".", "o")  # replace dots with an "o"
+    res = res.replace(", ", "_")    # replace ", " with "_"
+    res = res.replace(".", "o")     # replace dots with an "o"
+    res = res.replace("'", "")      # remove 's from values of string variables
     res += "_s" + str(i)  # add sample size
     res += ".pkl"  # add file type
     return res
