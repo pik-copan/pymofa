@@ -8,6 +8,7 @@ import sys
 import glob
 import numpy as np
 import pandas as pd
+import itertools as it
 import mpi  # wrapper for mpi4py
 
 # TODO: make exp_handling as class / object to cache stuff like bad runs
@@ -98,27 +99,31 @@ def compute(run_func, parameter_combinations, sample_size, save_path,
 def resave_data(source_path, parameter_combinations, index, eva, name,
                 sample_size=None, badmisskey=None, save_path="./data"):
     """
-    Resaves the computed "micro" data to smaller files that stores only "macro"
-    quanteties of interest. If a save_path is given, the pickled procecced data
+    Re-saves the computed "micro" data to smaller files that stores only "macro"
+    quantities of interest. If a save_path is given, the pickled processed data
     is saved separate from the raw input data.
+
+    Supports trajectories as data for parameter combinations, if they are
+    saved as data frames. Data frames must have a one dimensional integer Index
+    and 'time' as one of their columns.
 
     Parameters
     ----------
     source_path : string
         The path to the folder where the raw simulation data is stored
     parameter_combinations : list
-        A list of tuples of each parameter combination to resave
+        A list of tuples of each parameter combination to re-save
     index : dict as {position at parameter_combination : <name>}
-        effective parameter, i.e. the index positions (ints) where they are at
+        effective parameter, i.e. the index positions (integers) where they are at
         the complete parameter tuples and their names (strings)
     eva : dict as {<name of macro-quantities> : function how to compute it}
-        The function must recieve a list of filenames
+        The function must receive a list of filenames
     name : string
         The name of the saved macro quantity pickle file
     sample_size : int
         The number of samples to use [Default: None (means: Use all samples)]
     badmisskey : string (optional)
-        key that misses in the result dictionaries for badruns (Default: None)
+        key that misses in the result dictionaries for bad runs (Default: None)
     save_path : string
         The path to the folder where the processed results are saved
         if none is given, save_path defaults to ./data to ensure upward
@@ -133,7 +138,7 @@ def resave_data(source_path, parameter_combinations, index, eva, name,
 
     # Determine bad runs
     badruns = find_bad_runs(source_path, badmisskey)
-    print "Badruns:"
+    print "Bad runs:"
     print badruns
 
     # Determine the maximal sample size to use
@@ -151,7 +156,7 @@ def resave_data(source_path, parameter_combinations, index, eva, name,
         sample_size = int(min(sample_sizes))
         print "Using maximal possible sample size: " + str(sample_size)
     elif sample_size > min(sample_sizes):
-        # The data can't provide enough samples for the desired resaving
+        # The data can't provide enough samples for the desired re-saving
         raise ValueError("Given sample_size(" + str(sample_size) +
                          ") is too large. Maximal possible sample size: " +
                          str(min(sample_sizes)))
@@ -160,13 +165,33 @@ def resave_data(source_path, parameter_combinations, index, eva, name,
         print "Using sample_size " + str(sample_size) + ". " +\
             "Maximal possible sample size: " + str(min(sample_sizes))
 
-    # Prepare dataframe with multi index
+    # Prepare list of effective parameter combinations for MultiIndex
     eff_params = {index[k]: np.unique([p[k] for p in parameter_combinations])
                   for k in index.keys()}
+
+    # if eva returns a data frame, add the indices and column names to the list of effective parameters.
+    eva_return = [eva[evakey](np.sort(glob.glob(source_path + _get_ID(p, 0)[:-5] + "*"))) for evakey in eva.keys()]
+    input_is_dataframe = False
+    if type(eva_return[0])==pd.core.frame.DataFrame and \
+            not isinstance(eva_return[0].index, pd.core.index.MultiIndex) and \
+            'time' in eva_return[0].columns.values:
+        print 'input is a trajectory'
+        eff_params['timesteps'] = eva_return[0].index.values
+        eff_params['observables'] = eva_return[0].columns.values
+        index_order = list(it.chain.from_iterable([index.values(), ["timesteps", "observables"]]))
+        input_is_dataframe = True
+    else:
+        print 'input is NOT a trajectory'
+
+    
+    #Create MultiIndex and Dataframe
     mIndex = pd.MultiIndex.from_product(eff_params.values(),
                                         names=eff_params.keys())
-    df = pd.DataFrame(index=mIndex)
 
+    if input_is_dataframe: mIndex = mIndex.reorder_levels(index_order)
+
+    df = pd.DataFrame(index=mIndex)
+    
     # Loop through all parameter combinations
     for i, p in enumerate(parameter_combinations):
         _progress_report(i, lenparams, "Resaving... ")
@@ -185,7 +210,18 @@ def resave_data(source_path, parameter_combinations, index, eva, name,
         # Continue to read the data
         mx = tuple(p[k] for k in index.keys())
         for evakey in eva.keys():
-            df.loc[mx, evakey] = eva[evakey](efffnames)
+
+            eva_return =  eva[evakey](efffnames)
+
+            if input_is_dataframe:
+                #reshape output of eva and adjust index names.
+                stack = pd.DataFrame(eva_return.stack())
+                stackIndex = pd.MultiIndex(levels = stack.index.levels,\
+                        labels = stack.index.labels,\
+                        names = [u'timesteps', u'observables'])
+                eva_return = pd.DataFrame(stack, index = stackIndex)
+
+            df.loc[mx, evakey] = eva_return
 
     df.to_pickle(save_path + name)
 
@@ -252,8 +288,9 @@ def _get_ID(parameter_combination, i):
 
     res = str(parameter_combination)  # convert to sting
     res = res[1:-1]  # delete brackets
-    res = res.replace(", ", "_")  # replace ", " with "_"
-    res = res.replace(".", "o")  # replace dots with an "o"
+    res = res.replace(", ", "_")    # replace ", " with "_"
+    res = res.replace(".", "o")     # replace dots with an "o"
+    res = res.replace("'", "")      # remove 's from values of string variables
     res += "_s" + str(i)  # add sample size
     res += ".pkl"  # add file type
     return res
