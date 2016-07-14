@@ -10,6 +10,7 @@ import numpy as np
 import pandas as pd
 import itertools as it
 import mpi  # wrapper for mpi4py
+from scipy.interpolate import interp1d
 
 # TODO: make exp_handling as class / object to cache stuff like bad runs
 # -> suitable for multiple resavings
@@ -104,8 +105,9 @@ def resave_data(source_path, parameter_combinations, index, eva, name,
     is saved separate from the raw input data.
 
     Supports trajectories as data for parameter combinations, if they are
-    saved as data frames. Data frames must have a one dimensional integer Index
-    and 'time' as one of their columns.
+    saved as data frames. Data frames must have a one dimensional index 
+    with the time stamps of the measurements as index values.
+    Time stamps must be consistent between trajectories.
 
     Parameters
     ----------
@@ -173,8 +175,7 @@ def resave_data(source_path, parameter_combinations, index, eva, name,
     eva_return = [eva[evakey](np.sort(glob.glob(source_path + _get_ID(p, 0)[:-5] + "*"))) for evakey in eva.keys()]
     input_is_dataframe = False
     if type(eva_return[0])==pd.core.frame.DataFrame and \
-            not isinstance(eva_return[0].index, pd.core.index.MultiIndex) and \
-            'time' in eva_return[0].columns.values:
+            not isinstance(eva_return[0].index, pd.core.index.MultiIndex):
         print 'input is a trajectory'
         eff_params['timesteps'] = eva_return[0].index.values
         eff_params['observables'] = eva_return[0].columns.values
@@ -215,7 +216,7 @@ def resave_data(source_path, parameter_combinations, index, eva, name,
 
             if input_is_dataframe:
                 #reshape output of eva and adjust index names.
-                stack = pd.DataFrame(eva_return.stack())
+                stack = pd.DataFrame(eva_return.stack(dropna=False))
                 stackIndex = pd.MultiIndex(levels = stack.index.levels,\
                         labels = stack.index.labels,\
                         names = [u'timesteps', u'observables'])
@@ -318,3 +319,73 @@ def _progress_report(i, loop_length, msg=""):
     if i == loop_length-1:
         sys.stdout.write("\n")
         sys.stdout.flush()
+
+def equalize_time_series(dfi, N, t0=None, tN=None):
+    """
+    interpolate irregularly spaced time series
+    to obtain regularly spaced data.
+
+    Parameters
+    ----------
+    dfi : pandas dataframe
+        dataframe with one dimensional index containing
+        time stamps as index values.
+    N   : int
+        number of regularly spaced timestamps in the
+        resulting time series.
+    t0  : float
+        starting time of the resulting time series -
+        defaults to the first time step of the input
+        time series.
+    tN  : float
+        end time of the resulting time series -
+        defaults to the last time step of the input
+        time series.
+
+    Returns
+    -------
+    dfo : pandas dataframe
+        pandas dataframe with N regularly spaced 
+        time steps starting at t0 and ending at tN
+        inclusively. Output data is interpolated from 
+        the input data.
+    """
+    if t0 == None:
+        t0 = dfi.index.values[0]
+    if tN == None:
+        tN = dfi.index.values[-1]
+
+    timestamps = np.linspace(t0, tN, N)
+    
+    observables = dfi.columns
+    measurements = {}
+
+    #assuming the time series just breaks at some point and
+    #continues with Nan's we want to extract the intact part.
+
+    i_max = sum(~np.isnan(dfi[observables[0]]))
+    for o in observables:
+        measurements[o] = list(dfi[o])[:i_max]
+    measurements['time'] = list(dfi.index.values)[:i_max]
+    t_min, t_max = measurements['time'][0], measurements['time'][-1]
+
+    # create interpolation functions for intact part of 
+    # time series:
+
+    interpolations = {}
+    for o in observables:
+        interpolations[o] = interp1d(measurements['time'], measurements[o])
+
+    # generate data points from interpolation functions
+    # fill series with Nan's from where the original time
+    # series ended.
+
+    data_points = {}
+    data_points['time'] = timestamps
+    for o in observables:
+        x = [t if t<t_max else float('NaN') for t in timestamps]
+        data_points[o] = interpolations[o](x)
+
+    dfo = pd.DataFrame(data_points, index = timestamps)
+
+    return dfo
