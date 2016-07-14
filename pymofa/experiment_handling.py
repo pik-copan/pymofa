@@ -220,9 +220,11 @@ def resave_data(source_path, parameter_combinations, index, eva, name,
                 stackIndex = pd.MultiIndex(levels = stack.index.levels,\
                         labels = stack.index.labels,\
                         names = [u'timesteps', u'observables'])
-                eva_return = pd.DataFrame(stack, index = stackIndex)
-
-            df.loc[mx, evakey] = eva_return
+                eva_return = pd.DataFrame(stack, 
+                        index = stackIndex).sortlevel(level=1)
+                df.ix[mx, evakey] = eva_return[0].values
+            else:
+                df.loc[mx,evakey] = eva_return
 
     df.to_pickle(save_path + name)
 
