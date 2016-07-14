@@ -320,7 +320,7 @@ def _progress_report(i, loop_length, msg=""):
         sys.stdout.write("\n")
         sys.stdout.flush()
 
-def equalize_time_series(dfi, N, t0=None, tN=None):
+def even_time_series_spacing(dfi, N, t0=None, tN=None):
     """
     interpolate irregularly spaced time series
     to obtain regularly spaced data.
