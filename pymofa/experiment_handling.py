@@ -90,8 +90,9 @@ def compute(run_func, parameter_combinations, sample_size, save_path,
             exit_status = run_func(*p, filename=save_path + _get_ID(p, s))
             if exit_status != 1:  # Checking for expected execution
                 # TODO: proper logging
-                print "!!! " + _get_ID(p, s) + " returned with: " \
-                    + str(exit_status)
+                #print "!!! " + _get_ID(p, s) + " returned with: " \
+                #    + str(exit_status)
+                pass
 
     mpi.run(verbose=0, master_func=master)
 
@@ -133,6 +134,7 @@ def resave_data(source_path, parameter_combinations, index, eva, name,
     """
     # add "/" to save_path if it does not end already with a "/"
     source_path += "/" if not source_path.endswith("/") else ""
+    save_path += "/" if not save_path.endswith("/") else ""
 
     # create save_path if it is not yet existing
     if not os.path.exists(save_path):
@@ -176,13 +178,10 @@ def resave_data(source_path, parameter_combinations, index, eva, name,
     input_is_dataframe = False
     if type(eva_return[0])==pd.core.frame.DataFrame and \
             not isinstance(eva_return[0].index, pd.core.index.MultiIndex):
-        print 'input is a trajectory'
         eff_params['timesteps'] = eva_return[0].index.values
         eff_params['observables'] = eva_return[0].columns.values
         index_order = list(it.chain.from_iterable([index.values(), ["timesteps", "observables"]]))
         input_is_dataframe = True
-    else:
-        print 'input is NOT a trajectory'
 
     
     #Create MultiIndex and Dataframe
@@ -232,8 +231,8 @@ def resave_data(source_path, parameter_combinations, index, eva, name,
 def find_bad_runs(save_path, missing_key=None):
     """
     Find model runs that did not exit properly. Such a "bad" run is 
-    characterized by fewer entries in the saved data dictionary. It is assumend
-    that at least one run was not bad, i.e. at least one data dicitonary has
+    characterized by fewer entries in the saved data dictionary. It is assumed
+    that at least one run was not bad, i.e. at least one data dictionary has
     more entries than bad runs.
 
     Parameters
@@ -253,6 +252,8 @@ def find_bad_runs(save_path, missing_key=None):
     """
     # add "/" to save_path if it does not end already with a "/"
     save_path += "/" if not save_path.endswith("/") else ""
+
+    #create list of all files in save_path/*
     d = glob.glob("{}*".format(save_path))
 
     runs = {}
@@ -260,6 +261,7 @@ def find_bad_runs(save_path, missing_key=None):
     for i, f in enumerate(d):
         _progress_report(i, len(d), "Collecting bad runs ...")
         resdic = np.load(f)
+        #extract the ID from the filename string of the form path/ID.pkl
         ID = f[f.rfind("/")+1:-4]
 
         if missing_key is None:
