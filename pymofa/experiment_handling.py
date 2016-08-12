@@ -12,8 +12,12 @@ import itertools as it
 import mpi  # wrapper for mpi4py
 from scipy.interpolate import interp1d
 
-# TODO: make exp_handling as class / object to cache stuff like bad runs
+# TODO: 
+#------
+#make exp_handling as class / object to cache stuff like bad runs
 # -> suitable for multiple resavings
+
+#native implementation of mpi4py
 
 
 def compute(run_func, parameter_combinations, sample_size, save_path,
