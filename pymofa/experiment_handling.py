@@ -2,6 +2,14 @@
 This "experiment_handling" (eh) module provides functionality to run a computer
 model for various parameter combinations and sample sizes.
 @author: wbarfuss
+
+implementation of native mpi4py dependency and 
+post processing of pandas dataframes by jakobkolb
+
+mpi4py implementation heavily relies on
+http://github.com/jbornschein/mpi4py-examples/blob/master/09-task-pull.py
+
+
 """
 import os
 import sys
@@ -9,324 +17,347 @@ import glob
 import numpy as np
 import pandas as pd
 import itertools as it
-import mpi  # wrapper for mpi4py
 from scipy.interpolate import interp1d
 
 # TODO: 
 #------
-#make exp_handling as class / object to cache stuff like bad runs
-# -> suitable for multiple resavings
+# bad runs are retried immediately. needs a stop method though in
+# case some parameter combinations are impossible to complete.
 
-#native implementation of mpi4py
+#resaving is parallelized such that parameter combinations are 
+#distributed amongs nodes. For small sample sizes, a serial
+#implementation could be faster due to overhead...
 
+from mpi4py import MPI
 
-def compute(run_func, parameter_combinations, sample_size, save_path,
-            skipbadruns=False):
+def enum(*sequential, **named):
     """
-    Calls the 'run_func' for several 'parameter_combiantions' and
-    'sample_size's and provides a unique ID for each run to store the data at
-    the 'save_path' + ID
-
-    Parameters
-    ----------
-    run_func : function
-        The function the executes the model for a given set of parameters.
-        The first P paramters need to fit to the parameter_combinations.
-        The last parameter of run_func has to be named filename
-        If all went well run_func needs to return '1', otherwise another number
-    parameter_combinations : list
-        A list of tuples of each parameter combination to compute
-    sample_size : int
-        The size of samples of each parameter combiantion
-    save_path : string
-        The path to the folder where to store the computed results
-    skipbadruns : bool (Default: False)
-        If you don't want this function to check for bad runs that shall be
-        recalculated, than set to "True". Possible reason: speed.
+    handy way to fake an enumerated type in python
+    http://stackoverfloe.com/questions/36932/how-can-i-represent-an-enum-in-python
     """
-    # add "/" to save_path if it does not end already with a "/"
-    save_path += "/" if not save_path.endswith("/") else ""
+    enums = dict(zip(sequential, range(len(sequential))), **named)
+    return type('Enum', (), enums)
 
-    def master():
-        if not os.path.exists(save_path):
-            os.makedirs(save_path)
-        elif skipbadruns:
-            badruns = []
+tags = enum('START', 'READY', 'DONE', 'FAILED', 'EXIT')
+
+class experiment_handling():
+
+    def __init__(self, sample_size, parameter_combinations, index, path_raw, path_res='./data/'):
+        """
+        sets up the experiment handling class.
+        saves the sample size and parameter combinations of the
+        experiment and creates a list of tasks containing parameter
+        combinations, ensemble index and path to the corresponding
+        output files.
+
+        also sets up the MPI environment to keep track of 
+        master and subordinate nodes.
+
+        Parameters:
+        -----------
+        sample_size : int
+            number of runs for each parameter combination e.g.
+            size of the ensemble for statistical evaluation
+        parameter_combinations: list[tuples]
+            list of parameter combinations that are stored in
+            tuples. Number of parameters for each combination 
+            has to fit the number of input parameters of the
+            run function.
+        index : dict
+            indicating the varied parameters as
+            {position in parameter_combinations: name}
+            is needed for post processing to create the
+            multi index containing the variable parameters
+        path_raw : string
+            absolute path to the raw data of the computations
+        path_res : string
+            absolute path to the post processed data
+        """
+        
+        self.sample_size = sample_size
+        self.parameter_combinations = parameter_combinations
+        self.index = index
+
+        # add "/" to paths if missing
+        self.path_raw = path_raw+"/" if not path_raw.endswith("/") else path_raw
+        self.path_res = path_res+"/" if not path_res.endswith("/") else path_res
+
+        self.comm = MPI.COMM_WORLD
+        self.status = MPI.Status()
+        self.size = self.comm.Get_size()
+        self.rank = self.comm.Get_rank()
+
+        self.master = 0
+        self.nodes = range(1,self.size)
+        self.n_nodes = self.size-1
+
+        if self.rank == 0:
+            self.amMaster = True
+            self.amNode  = False
         else:
-            badruns = find_bad_runs(save_path)
+            self.amMaster = False
+            self.amNode  = True
+        
+        #create list of tasks (parameter_combs*sample_size)
+        #and paths to save the results.
+        self.tasks = []
+        for s in range(self.sample_size):
+            for p in self.parameter_combinations:
+                filename = self.path_raw + self._get_ID(p, s)
+                if not os.path.exists(filename):
+                    self.tasks.append((p, filename))
+        self.filenames = []
 
-        # preprocessing - Obtaining the data
-        tocalc = []
-        for s in range(sample_size):
-            for p in parameter_combinations:
-                if not os.path.exists(save_path + _get_ID(p, s)) or\
-                       _get_ID(p, s)[: -4] in badruns:
-                    tocalc.append((p, s))
+    def compute(self, run_func, skipbadruns=False):
+        """
+        Calls the 'run_func' for several 'parameter_combiantions' and
+        'sample_size's and provides a unique ID for each run to store the data at
+        the 'path_res' + ID
 
-        lentocalc = len(tocalc)
-        totallen = len(parameter_combinations) * sample_size
-        print ("%i%% already computed" % (100 - (float(lentocalc) * 100 /
-                                                 totallen)))
-        print str(lentocalc) + " of " + str(totallen) +\
-            " single computations left"
+        Parameters
+        ----------
+        run_func : function
+            The function the executes the model for a given set of parameters.
+            The first P paramters need to fit to the parameter_combinations.
+            The last parameter of run_func has to be named filename
+            If run_func succeded, it returns >=0, else it returns < 0
+        skipbadruns : bool (Default: False)
+            If you don't want this function to check for bad runs that shall be
+            recalculated, than set to "True". Possible reason: speed.
+        """
 
-        n_nodes = mpi.size - 1
-        if n_nodes > 0:
-            jobs_per_node = int(lentocalc / n_nodes)
+        if self.amMaster:
+
+            #check if nodes are available. If not, abbort.
+            if self.n_nodes<1:
+                print 'there are no nodes that can be put to work. Abborting'
+                self.comm.Abort()
+
+            #check, if path exists. If not, create.
+            if not os.path.exists(self.path_raw):
+                os.makedirs(self.path_raw)
+
+            #give brief feedback about remaining work.
+            print  str(len(self.tasks)) + " of " \
+                + str(len(self.parameter_combinations)*self.sample_size) \
+                + " single computations left"
+            print "Splitting calculations to {} nodes.".format(self.n_nodes)
+
+            task_index = 0
+            tasks_completed = 0
+            closed_nodes = 0
+            while closed_nodes < self.n_nodes:
+                n_return = self.comm.recv(source=MPI.ANY_SOURCE, tag=MPI.ANY_TAG, status=self.status)
+                source = self.status.Get_source()
+                tag = self.status.Get_tag()
+                if tag == tags.READY:
+                    #node is ready, can take new task
+                    if task_index<len(self.tasks):
+                        self.comm.send(self.tasks[task_index], dest=source, tag=tags.START)
+                        task_index += 1
+                    else:
+                        self.comm.send(None, dest=source, tag=tags.EXIT)
+                elif tag == tags.FAILED:
+                    #node failed to complete. retry
+                    old_task = n_return
+                    self.comm.send(old_task, dest=source, tag=tags.START)
+                elif tag == tags.DONE:
+                    #node succeeded
+                    result = n_return
+                    tasks_completed += 1
+                    self._progress_report(tasks_completed, len(self.tasks), "Calculating {} ...".format(source))
+                elif tag == tags.EXIT:
+                    #node completed all tasks. close
+                    closed_nodes += 1
+            print "Calculating 0 ...done."
+
+        if self.amNode:
+            #Nodes work as follows:
+            name = MPI.Get_processor_name()
+            while True:
+                self.comm.send(None, dest=self.master, tag=tags.READY)
+                task = self.comm.recv(source=self.master, tag=MPI.ANY_TAG, status=self.status)
+                tag = self.status.Get_tag()
+
+                if tag == tags.START:
+                    #go work:
+                    (params, filename) = task
+                    result = run_func(*params, filename=filename)
+                    if result >= 0:
+                        self.comm.send(result, dest=self.master, tag=tags.DONE)
+                    else:
+                        self.comm.send(task, dest=self.master, tag=tags.FAILED)
+                elif tag == tags.EXIT:
+                    break
+
+            self.comm.send(None, dest=self.master, tag=tags.EXIT)
+
+        self.comm.Barrier()
+
+    def resave(self, eva, name):
+        """
+        Postprocesses the computed raw data via application of the 
+        operators that are provided in the eva dictionary.
+        
+        Supports trajectories as data for parameter combinations if they are
+        saved as data frames. Data frames must have a one dimensional index 
+        with the time stamps of the measurements as index values.
+        Time stamps must be consistent between trajectories.
+
+        Parameters
+        ----------
+        eva : dict as {<name of macro-quantities> : function how to compute it}
+            The function must receive a list of filenames
+        name : string
+            The name of the saved macro quantity pickle file
+        """
+
+        # Prepare list of effective parameter combinations for MultiIndex
+        eff_params = {self.index[k]: np.unique([p[k] for p in self.parameter_combinations])
+                      for k in self.index.keys()}
+
+        # if eva returns a data frame, add the indices and column names to the list of effective parameters.
+        eva_return = [eva[evakey](np.sort(glob.glob(self.path_raw + \
+                self._get_ID(self.parameter_combinations[0])))) for evakey in eva.keys()]
+        if type(eva_return[0])==pd.core.frame.DataFrame and \
+                not isinstance(eva_return[0].index, pd.core.index.MultiIndex):
+            eff_params['timesteps'] = eva_return[0].index.values
+            eff_params['observables'] = eva_return[0].columns.values
+            index_order = list(it.chain.from_iterable([self.index.values(), ["timesteps", "observables"]]))
+            input_is_dataframe = True
         else:
-            jobs_per_node = lentocalc
-            n_nodes = 1
-        print "Splitting calculations to {} nodes.".format(n_nodes)
-
-        for i in range(n_nodes):
-            mpi.submit_call("slave", (tocalc[i*jobs_per_node:
-                            (i+1)*jobs_per_node], i), module=__name__)
-        if lentocalc > (jobs_per_node * n_nodes):
-            mpi.submit_call("slave", (tocalc[(i+1)*jobs_per_node:], i),
-                            module=__name__)
-
-    global slave  # slave into the globe scope to work with mpi
-
-    def slave(slavecalcs, sid):
-        lentocalc = len(slavecalcs)
-        for i, (p, s) in enumerate(slavecalcs):
-            _progress_report(i, lentocalc, "computation {} ... ".format(sid))
-            exit_status = run_func(*p, filename=save_path + _get_ID(p, s))
-            if exit_status != 1:  # Checking for expected execution
-                # TODO: proper logging
-                #print "!!! " + _get_ID(p, s) + " returned with: " \
-                #    + str(exit_status)
-                pass
-
-    mpi.run(verbose=0, master_func=master)
+            input_is_dataframe = False
 
 
-#TODO: needs more efficient resave handling for every large runs / experiments
-def resave_data(source_path, parameter_combinations, index, eva, name,
-                sample_size=None, badmisskey=None, save_path="./data"):
-    """
-    Re-saves the computed "micro" data to smaller files that stores only "macro"
-    quantities of interest. If a save_path is given, the pickled processed data
-    is saved separate from the raw input data.
+        if self.amMaster:
+            print 'processing ', name
+            print 'under operators ', eva.keys()
+            # create save_path if it is not yet existing
+            if not os.path.exists(self.path_res):
+                os.makedirs(self.path_res)
 
-    Supports trajectories as data for parameter combinations, if they are
-    saved as data frames. Data frames must have a one dimensional index 
-    with the time stamps of the measurements as index values.
-    Time stamps must be consistent between trajectories.
+            #Create MultiIndex and Dataframe
+            mIndex = pd.MultiIndex.from_product(eff_params.values(),
+                                                names=eff_params.keys())
 
-    Parameters
-    ----------
-    source_path : string
-        The path to the folder where the raw simulation data is stored
-    parameter_combinations : list
-        A list of tuples of each parameter combination to re-save
-    index : dict as {position at parameter_combination : <name>}
-        effective parameter, i.e. the index positions (integers) where they are at
-        the complete parameter tuples and their names (strings)
-    eva : dict as {<name of macro-quantities> : function how to compute it}
-        The function must receive a list of filenames
-    name : string
-        The name of the saved macro quantity pickle file
-    sample_size : int
-        The number of samples to use [Default: None (means: Use all samples)]
-    badmisskey : string (optional)
-        key that misses in the result dictionaries for bad runs (Default: None)
-    save_path : string
-        The path to the folder where the processed results are saved
-        if none is given, save_path defaults to ./data to ensure upward
-        compatibility.
-    """
-    # add "/" to save_path if it does not end already with a "/"
-    source_path += "/" if not source_path.endswith("/") else ""
-    save_path += "/" if not save_path.endswith("/") else ""
+            if input_is_dataframe: mIndex = mIndex.reorder_levels(index_order)
 
-    # create save_path if it is not yet existing
-    if not os.path.exists(save_path):
-        os.makedirs(save_path)
+            df = pd.DataFrame(index=mIndex)
 
-    # Determine bad runs
-    badruns = find_bad_runs(source_path, badmisskey)
-    print "Bad runs:"
-    print badruns
+            task_index = 0
+            tasks_completed = 0
+            n_tasks = len(self.parameter_combinations)*len(eva.keys())
+            closed_nodes = 0
+            while closed_nodes < self.n_nodes:
+                #master keeps subordinate nodes buzzy:
+                data = self.comm.recv(source=MPI.ANY_SOURCE, tag=MPI.ANY_TAG, status=self.status)
+                source=self.status.Get_source()
+                tag = self.status.Get_tag()
+                if tag == tags.READY:
+                    #node ready to work.
+                    if task_index < n_tasks:
+                        #if there is work, distribute it
+                        p_index, k_index = divmod(task_index, len(eva.keys()))
+                        task = (self.parameter_combinations[p_index], eva.keys()[k_index])
+                        self.comm.send(task, dest=source, tag=tags.START)
+                        task_index += 1
+                    else:
+                        #if not, release worker
+                        self.comm.send(None, dest=source, tag=tags.EXIT)
+                elif tag == tags.DONE:
+                    (mx, key, eva_return) = data
+                    df.loc[mx,evakey] = eva_return
+                    tasks_completed += 1
+                    self._progress_report(tasks_completed, n_tasks, "Post-processing {} ...".format(source))
+                elif tag == tags.EXIT:
+                    closed_nodes += 1
+            print 'Post-processing done'
 
-    # Determine the maximal sample size to use
-    sample_sizes = []
-    lenparams = len(parameter_combinations)
-    for ip, p in enumerate(parameter_combinations):
-        _progress_report(ip, lenparams, "Determine max. sample size... ")
-        fnames = np.sort(glob.glob(source_path + _get_ID(p, 0)[:-5] + "*"))
-        shortID = fnames[0][fnames[0].rfind("/")+1:fnames[0].rfind("s")]
-        NrBadruns = np.sum([badruns[i].startswith(shortID)
-                            for i in range(len(badruns))])
-        sample_sizes.append(len(fnames)-NrBadruns)
-    if sample_size is None:
-        # No sample_size given: Using the maximal possible one
-        sample_size = int(min(sample_sizes))
-        print "Using maximal possible sample size: " + str(sample_size)
-    elif sample_size > min(sample_sizes):
-        # The data can't provide enough samples for the desired re-saving
-        raise ValueError("Given sample_size(" + str(sample_size) +
-                         ") is too large. Maximal possible sample size: " +
-                         str(min(sample_sizes)))
-    else:
-        # The given sample size can be used
-        print "Using sample_size " + str(sample_size) + ". " +\
-            "Maximal possible sample size: " + str(min(sample_sizes))
+        if self.amNode:
+            #Nodes work as follows:
+            name = MPI.Get_processor_name()
+            while True:
+                self.comm.send(None, dest=self.master, tag=tags.READY)
+                task = self.comm.recv(source=self.master, tag=MPI.ANY_TAG, status=self.status)
+                tag = self.status.Get_tag()
+                if tag == tags.START:
+                    #go work:
+                    (p, key) = task
+                    mx = tuple(p[k] for k in self.index.keys())
+                    fnames = np.sort(glob.glob(self.path_raw + self._get_ID(p)))
+                    eva_return = eva[key](fnames)
+                    if input_is_dataframe:
+                        stack = pd.DataFrame(eva_return.stack(dropna=False))
+                        stackIndex = pd.MultiIndex(levels = stack.index.levels, \
+                                labels = stack.index.labels,\
+                                names = [u'timesteps', u'observables'])
+                        eva_return = pd.DataFrame(stack, 
+                                index = stackIndex).sortlevel(level=1)
+                    self.comm.send((mx, key, eva_return), dest=self.master, tag=tags.DONE)
+                elif tag == tags.EXIT:
+                    break
 
-    # Prepare list of effective parameter combinations for MultiIndex
-    eff_params = {index[k]: np.unique([p[k] for p in parameter_combinations])
-                  for k in index.keys()}
+            self.comm.send(None, dest=self.master, tag=tags.EXIT)
 
-    # if eva returns a data frame, add the indices and column names to the list of effective parameters.
-    eva_return = [eva[evakey](np.sort(glob.glob(source_path + _get_ID(p, 0)[:-5] + "*"))) for evakey in eva.keys()]
-    input_is_dataframe = False
-    if type(eva_return[0])==pd.core.frame.DataFrame and \
-            not isinstance(eva_return[0].index, pd.core.index.MultiIndex):
-        eff_params['timesteps'] = eva_return[0].index.values
-        eff_params['observables'] = eva_return[0].columns.values
-        index_order = list(it.chain.from_iterable([index.values(), ["timesteps", "observables"]]))
-        input_is_dataframe = True
+        self.comm.Barrier()
 
-    
-    #Create MultiIndex and Dataframe
-    mIndex = pd.MultiIndex.from_product(eff_params.values(),
-                                        names=eff_params.keys())
+    def _get_ID(self, parameter_combination, i=None):
+        """
+        Get a unique ID of the form parameterID_index_ID.pkl for 
+        a 'parameter_combination' and an ensemble index 'i'.
+        
 
-    if input_is_dataframe: mIndex = mIndex.reorder_levels(index_order)
+        Parameters
+        ----------
+        parameter_combination : tuple
+            The combination of parameters
+        i : int
+            The ensemble index.
+            if i = None, it returns the pattern
+            matching the entire ensemble e.g.
+            parameterID*.pkl
 
-    df = pd.DataFrame(index=mIndex)
-    
-    # Loop through all parameter combinations
-    for i, p in enumerate(parameter_combinations):
-        _progress_report(i, lenparams, "Resaving... ")
-        fnames = np.sort(glob.glob(source_path + _get_ID(p, 0)[:-5] + "*"))
+        Returns
+        -------
+        ID : string
+            unique ID or pattern plus the ".pkl" ending
+        """
 
-        # Determine effective filenames (those without the bad_runs)
-        badrunmasks = [map(lambda fname: fname.endswith(badrun + ".pkl"),
-                           fnames) for badrun in badruns]
-        badrunmask = np.zeros(len(fnames))
-        for brm in badrunmasks:
-            badrunmask = np.logical_or(badrunmask, brm)
-        efffnames = np.array(fnames)[np.logical_not(badrunmask)]
-
-        # Set the sample size
-        efffnames = np.random.choice(efffnames, size=sample_size)
-        # Continue to read the data
-        mx = tuple(p[k] for k in index.keys())
-        for evakey in eva.keys():
-
-            eva_return =  eva[evakey](efffnames)
-
-            if input_is_dataframe:
-                #reshape output of eva and adjust index names.
-                stack = pd.DataFrame(eva_return.stack(dropna=False))
-                stackIndex = pd.MultiIndex(levels = stack.index.levels,\
-                        labels = stack.index.labels,\
-                        names = [u'timesteps', u'observables'])
-                eva_return = pd.DataFrame(stack, 
-                        index = stackIndex).sortlevel(level=1)
-                df.ix[mx, evakey] = eva_return[0].values
-            else:
-                df.loc[mx,evakey] = eva_return
-
-    df.to_pickle(save_path + name)
+        res = str(parameter_combination)  # convert to sting
+        res = res[1:-1]  # delete brackets
+        res = res.replace(", ", "_")    # replace ", " with "_"
+        res = res.replace(".", "o")     # replace dots with an "o"
+        res = res.replace("'", "")      # remove 's from values of string variables
+        if i == None:
+            res +='*.pkl'
+        else:
+            res += "_s" + str(i)  # add sample size
+            res += ".pkl"  # add file type
+        return res
 
 
-def find_bad_runs(save_path, missing_key=None):
-    """
-    Find model runs that did not exit properly. Such a "bad" run is 
-    characterized by fewer entries in the saved data dictionary. It is assumed
-    that at least one run was not bad, i.e. at least one data dictionary has
-    more entries than bad runs.
+    def _progress_report(self, i, loop_length, msg=""):
+        """
+        A small progress report for a loop of defined length.
 
-    Parameters
-    ----------
-    save_path : string
-        The path to the folder where to store the computed results
-    missing_key : string (optional)
-        The key of the saved result dictionary that misses in not properly
-        computed model runs (Default: None)
-        If a missing_key is given, that the number of elements in the saved
-        data dictionaries are ignored.
-
-    Returns
-    -------
-    bad_ones : list
-        List of filenames that where did not properly run
-    """
-    # add "/" to save_path if it does not end already with a "/"
-    save_path += "/" if not save_path.endswith("/") else ""
-
-    #create list of all files in save_path/*
-    d = glob.glob("{}*".format(save_path))
-
-    runs = {}
-    bad_runs = []
-    for i, f in enumerate(d):
-        _progress_report(i, len(d), "Collecting bad runs ...")
-        resdic = np.load(f)
-        #extract the ID from the filename string of the form path/ID.pkl
-        ID = f[f.rfind("/")+1:-4]
-
-        if missing_key is None:
-            runs[ID] = len(resdic)
-        elif missing_key not in resdic:
-            bad_runs.append(ID)
-    if missing_key is None:
-        bad_runs = filter(lambda x: runs[x] < max(runs.values()), runs.keys())
-
-    return bad_runs
-
-
-def _get_ID(parameter_combination, i):
-    """
-    Get a unique ID for a 'parameter_combination' and a sample 'i'.
-
-    Parameters
-    ----------
-    parameter_combination : tuple
-        The combination of parameters
-    i : int
-        The sample
-
-    Returns
-    -------
-    ID : string
-        unique ID plus the ".pkl" ending
-    """
-
-    res = str(parameter_combination)  # convert to sting
-    res = res[1:-1]  # delete brackets
-    res = res.replace(", ", "_")    # replace ", " with "_"
-    res = res.replace(".", "o")     # replace dots with an "o"
-    res = res.replace("'", "")      # remove 's from values of string variables
-    res += "_s" + str(i)  # add sample size
-    res += ".pkl"  # add file type
-    return res
-
-
-def _progress_report(i, loop_length, msg=""):
-    """
-    A small progress report for a loop of defined length.
-
-    Parameters
-    ----------
-    i : int
-        the current position in the loop
-    loop_length : int
-        the length of the loop
-    msg : string
-        (optional) a preceding string
-    """
-    percent = str(int(np.around(float(i)/loop_length, 2) * 100))
-    sys.stdout.write("\r")
-    sys.stdout.flush()
-    sys.stdout.write(msg + " [" + percent + "%] ")
-    sys.stdout.flush()
-
-    if i == loop_length-1:
-        sys.stdout.write("\n")
+        Parameters
+        ----------
+        i : int
+            the current position in the loop
+        loop_length : int
+            the length of the loop
+        msg : string
+            (optional) a preceding string
+        """
+        percent = str(int(np.around(float(i)/loop_length, 2) * 100))
+        sys.stdout.write("\r")
         sys.stdout.flush()
+        sys.stdout.write(msg + " [" + percent + "%] ")
+        sys.stdout.flush()
+
+        if i == loop_length-1:
+            sys.stdout.write("\n")
+            sys.stdout.flush()
 
 def even_time_series_spacing(dfi, N, t0=None, tN=None):
     """
