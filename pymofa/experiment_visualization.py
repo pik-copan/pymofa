@@ -10,7 +10,7 @@ mpl.style.use("ggplot")
 
 
 def explore_Parameterspace(TwoDFrame, title="",
-                           cmap='RdBu', vmin=None, vmax=None):
+                           cmap='RdBu', norm=None, vmin=None, vmax=None):
     """
     Explore variables in a 2-dim Parameterspace
 
@@ -41,7 +41,7 @@ def explore_Parameterspace(TwoDFrame, title="",
 
     X, Y = _create_meshgrid(xparams, yparams)
     fig = plt.figure()
-    c = plt.pcolormesh(X, Y, values, cmap=cmap, vmin=vmin, vmax=vmax)
+    c = plt.pcolormesh(X, Y, values, cmap=cmap, norm=norm, vmin=vmin, vmax=vmax)
     plt.colorbar(c, orientation="vertical")
     plt.xlim(np.min(X), np.max(X))
     plt.ylim(np.min(Y), np.max(Y))
