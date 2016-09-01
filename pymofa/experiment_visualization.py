@@ -1,18 +1,29 @@
+"""Visualize the outcome of computer experiment.
+
+TODOs
+-----
+Explore Parameterspace3D
+    see: http://matplotlib.org/examples/mplot3d/contour3d_demo3.html
+    fig = plt.figure()
+    ax = fig.gca(projection="3d")
+    ax.plot_surface(X, Y, values, rstride=1, cstride=1, alpha=0.3,
+                    cmap=cm.PiYG)
+    cset = ax.contour(X, Y, values, zdir='y', offset=0.9, cmap=cm.Blues)
+    cset = ax.contour(X, Y, values, zdir='z', offset=0.0, cmap=cm.Blues)
+    ax.set_xlabel("tau")
+    ax.set_ylabel("sigma")
 """
-Provides functionality to visualize the outcome of computer experiment
-"""
+import numpy as np
+import matplotlib.pyplot as plt
 import matplotlib as mpl
 mpl.use('Agg')
-import matplotlib.pyplot as plt
-import numpy as np
-import matplotlib as mpl
 mpl.style.use("ggplot")
 
 
 def explore_Parameterspace(TwoDFrame, title="",
                            cmap='RdBu', norm=None, vmin=None, vmax=None):
     """
-    Explore variables in a 2-dim Parameterspace
+    Explore variables in a 2-dim Parameterspace.
 
     Parameters
     ----------
@@ -34,14 +45,14 @@ def explore_Parameterspace(TwoDFrame, title="",
     >>> explore_Parameterspace(data.unstack(level="deltaT")["<safe>",0.5].
     >>>                        unstack(level="phi"))
     """
-
     xparams = TwoDFrame.columns.values
     yparams = TwoDFrame.index.values
     values = TwoDFrame.values
 
     X, Y = _create_meshgrid(xparams, yparams)
     fig = plt.figure()
-    c = plt.pcolormesh(X, Y, values, cmap=cmap, norm=norm, vmin=vmin, vmax=vmax)
+    c = plt.pcolormesh(X, Y, values, cmap=cmap, norm=norm, vmin=vmin,
+                       vmax=vmax)
     plt.colorbar(c, orientation="vertical")
     plt.xlim(np.min(X), np.max(X))
     plt.ylim(np.min(Y), np.max(Y))
@@ -50,21 +61,13 @@ def explore_Parameterspace(TwoDFrame, title="",
     plt.title(title)
     plt.tight_layout()
 
-    return fig 
-
-# TODO: Explore Parameterspace3D
-# see: http://matplotlib.org/examples/mplot3d/contour3d_demo3.html
-# fig = plt.figure()
-# ax = fig.gca(projection="3d")
-# ax.plot_surface(X, Y, values, rstride=1, cstride=1, alpha=0.3, cmap=cm.PiYG)
-# cset = ax.contour(X, Y, values, zdir='y', offset=0.9, cmap=cm.Blues)
-# cset = ax.contour(X, Y, values, zdir='z', offset=0.0, cmap=cm.Blues)
-# ax.set_xlabel("tau")
-# ax.set_ylabel("sigma")
+    return fig
 
 
 def _create_meshgrid(x, y):
     """
+    Proper spaced meshgrid.
+
     Create a meshgrid out of the array-like types x and y. We assume that x and
     y are equally spaced. The funciton positions the values of x and y into the
     middle of the return value.
@@ -95,10 +98,11 @@ def _create_meshgrid(x, y):
     y = np.array(y)
 
     def broaden_grid(x):
+        """Extend the x,y grid for proper spacing."""
         dx = x[1:] - x[:-1]
         xx = np.concatenate(([x[0]], x))
         dxx = np.concatenate(([-dx[0]], dx, [dx[-1]]))
-        return xx+dxx/2.
+        return xx + dxx/2.
 
     X = broaden_grid(x)
     Y = broaden_grid(y)
