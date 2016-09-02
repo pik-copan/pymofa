@@ -1,7 +1,10 @@
+
 python modeling framework (pyMoFa)
 ==================================
 is a collection of simple functions to run and evaluate computer models
 systematically.
+
+.. contents::
 
 Usage
 -----
@@ -11,7 +14,7 @@ To use the modeling framework write a python script representing one
 There you have to specify the path where you want to save your data, the sample
 size you want to use, the parameter combinations with which you want to run
 your model and a function to set up and run your model and save resulting data
-
+::
     # File: Experiment.py
 
     # Imports
@@ -70,7 +73,7 @@ Additionally you can post-process the generated model data for evaluation. For
 this you need to provide an index, i.e. the subset of parameters that are the
 parameters you want to study in more detail, evaluation functions and a name of
 the resaved data file.
-
+::
     # Continuation of Experiment.py
 
     # index is a dict with int keys giving the position in RUN_FUN parameter
@@ -100,3 +103,22 @@ the resaved data file.
     # to exist
 
 For further documentation, use the source!
+
+Tests
+-----
+using `pytest <http://docs.pytest.org/en/latest/>`_ with
+`pylama <https://github.com/klen/pylama#pytest-integration>`_
+(including `pylama-pylint <https://github.com/klen/pylama_pylint>`_)
+and test coverage reports with the `pytest` plugin
+`pytest-cov <https://github.com/pytest-dev/pytest-cov>`_.
+
+To be installed with::
+
+    $> pip install pytest pylama pylama-pylint pytest-cov
+    
+The config file is <pytest.ini>.
+    
+Write tests and make sure that they pass by::
+
+    $> py.test
+
