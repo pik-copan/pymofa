@@ -106,11 +106,11 @@ For further documentation, use the source!
 
 Tests
 -----
-using `pytest <http://docs.pytest.org/en/latest/>` with
-`pylama <https://github.com/klen/pylama#pytest-integration>`
-(including `pylama-pylint <https://github.com/klen/pylama_pylint>`)
+using `pytest <http://docs.pytest.org/en/latest/>`_ with
+`pylama <https://github.com/klen/pylama#pytest-integration>`_
+(including `pylama-pylint <https://github.com/klen/pylama_pylint>`_)
 and test coverage reports with the `pytest` plugin
-`pytest-cov <https://github.com/pytest-dev/pytest-cov>.
+`pytest-cov <https://github.com/pytest-dev/pytest-cov>_`.
 
 To be installed with::
 
