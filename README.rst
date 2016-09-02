@@ -4,6 +4,8 @@ python modeling framework (pyMoFa)
 is a collection of simple functions to run and evaluate computer models
 systematically.
 
+.. contents::
+
 Usage
 -----
 To use the modeling framework write a python script representing one
@@ -111,10 +113,12 @@ and test coverage reports with the `pytest` plugin
 `pytest-cov <https://github.com/pytest-dev/pytest-cov>.
 
 To be installed with::
+
     $> pip install pytest pylama pylama-pylint pytest-cov
     
 The config file is <pytest.ini>.
     
 Write tests and make sure that they pass by::
-    §> py.test
+
+    $> py.test
 
