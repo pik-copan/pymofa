@@ -149,11 +149,6 @@ class experiment_handling(object):
             recalculated, than set to "True". Possible reason: speed.
         """
         if self.amMaster:
-            # check if nodes are available. If not, abbort.
-            if self.n_nodes < 1:
-                print 'there are no nodes that can be put to work. Abborting'
-                self.comm.Abort()
-
             # check, if path exists. If not, create.
             if not os.path.exists(self.path_raw):
                 os.makedirs(self.path_raw)
@@ -162,8 +157,19 @@ class experiment_handling(object):
             print str(len(self.tasks)) + " of "\
                 + str(len(self.parameter_combinations)*self.sample_size)\
                 + " single computations left"
-            print "Splitting calculations to {} nodes.".format(self.n_nodes)
 
+            # check if nodes are available. If not, abbort.
+            if self.n_nodes < 1:
+                # print 'there are no nodes that can be put to work. Abborting'
+                # self.comm.Abort()
+                print "Only one node available. No parallel execution."
+                for task in self.tasks:
+                    (params, filename) = task
+                    result = -1
+                    while result < 0:
+                        result = run_func(*params, filename=filename)
+
+            print "Splitting calculations to {} nodes.".format(self.n_nodes)
             task_index = 0
             tasks_completed = 0
             closed_nodes = 0
