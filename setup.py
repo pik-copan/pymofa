@@ -1,4 +1,4 @@
-"""This is setup.py ."""
+"""setup.py defining some installation instructions."""
 from setuptools import setup
 
 setup(name='pymofa',
