@@ -293,7 +293,6 @@ class experiment_handling(object):
                               eva.keys()[k_index])
                     mx = tuple(p[k] for k in self.index.keys())
                     fnames = np.sort(glob.glob(self.path_raw + self._get_ID(p)))
-                    print self._get_ID(p)
                     eva_return = eva[key](fnames)
                     if input_is_dataframe:
                         stack = pd.DataFrame(eva_return.stack(dropna=False))
@@ -305,6 +304,9 @@ class experiment_handling(object):
                                                   index=stackIndex)\
                             .sortlevel(level=1)
                     df.loc[mx, evakey] = eva_return
+                df.to_pickle(self.path_res + name)
+                print 'Post-processing done'
+                print 'saving to ', self.path_res + name
 
             # If nodes are available, distribute work amongst nodes.
 
@@ -368,6 +370,7 @@ class experiment_handling(object):
             self.comm.send(None, dest=self.master, tag=tags.EXIT)
 
         self.comm.Barrier()
+        df.to_pickle(self.path_res + name)
 
     @staticmethod
     def _get_ID(parameter_combination, i=None):
