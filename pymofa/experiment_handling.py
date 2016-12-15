@@ -80,14 +80,14 @@ class experiment_handling(object):
             size of the ensemble for statistical evaluation
         parameter_combinations: list[tuples]
             list of parameter combinations that are stored in
-            tuples. Number of parameters for each combination
-            has to fit the number of input parameters of the
+            tuples. Number of Parameters for each combination
+            has to fit the number of input Parameters of the
             run function.
         index : dict
-            indicating the varied parameters as
+            indicating the varied Parameters as
             {position in parameter_combinations: name}
             is needed for post processing to create the
-            multi index containing the variable parameters
+            multi index containing the variable Parameters
         path_raw : string
             absolute path to the raw data of the computations
         path_res : string
@@ -140,8 +140,8 @@ class experiment_handling(object):
         Parameters
         ----------
         run_func : function
-            The function the executes the model for a given set of parameters.
-            The first P paramters need to fit to the parameter_combinations.
+            The function the executes the Model for a given set of Parameters.
+            The first p paramters need to fit to the parameter_combinations.
             The last parameter of run_func has to be named filename
             If run_func succeded, it returns >=0, else it returns < 0
         skipbadruns : bool (Default: False)
@@ -158,10 +158,8 @@ class experiment_handling(object):
                 + str(len(self.parameter_combinations)*self.sample_size)\
                 + " single computations left"
 
-            # check if nodes are available. If not, abbort.
+            # check if nodes are available. If not, do serial calculation.
             if self.n_nodes < 1:
-                # print 'there are no nodes that can be put to work. Abborting'
-                # self.comm.Abort()
                 print "Only one node available. No parallel execution."
                 for task in self.tasks:
                     (params, filename) = task
@@ -285,6 +283,31 @@ class experiment_handling(object):
             tasks_completed = 0
             n_tasks = len(self.parameter_combinations)*len(eva.keys())
             closed_nodes = 0
+
+            # Check if nodes are available. If not, do serial computation.
+            if self.n_nodes < 1:
+                print "Only one node available. No parallel execution."
+                for task_index in range(n_tasks):
+                    p_index, k_index = divmod(task_index, len(eva.keys()))
+                    p, key = (self.parameter_combinations[p_index],
+                              eva.keys()[k_index])
+                    mx = tuple(p[k] for k in self.index.keys())
+                    fnames = np.sort(glob.glob(self.path_raw + self._get_ID(p)))
+                    print self._get_ID(p)
+                    eva_return = eva[key](fnames)
+                    if input_is_dataframe:
+                        stack = pd.DataFrame(eva_return.stack(dropna=False))
+                        stackIndex = pd.MultiIndex(levels=stack.index.levels,
+                                                   labels=stack.index.labels,
+                                                   names=[u'timesteps',
+                                                          u'observables'])
+                        eva_return = pd.DataFrame(stack,
+                                                  index=stackIndex)\
+                            .sortlevel(level=1)
+                    df.loc[mx, evakey] = eva_return
+
+            # If nodes are available, distribute work amongst nodes.
+
             while closed_nodes < self.n_nodes:
                 # master keeps subordinate nodes buzzy:
                 data = self.comm.recv(source=MPI.ANY_SOURCE, tag=MPI.ANY_TAG,
@@ -356,7 +379,7 @@ class experiment_handling(object):
         Parameters
         ----------
         parameter_combination : tuple
-            The combination of parameters
+            The combination of Parameters
         i : int
             The ensemble index.
             if i = None, it returns the pattern
@@ -370,9 +393,13 @@ class experiment_handling(object):
         """
         res = str(parameter_combination)  # convert to sting
         res = res[1:-1]  # delete brackets
-        res = res.replace(", ", "_")  # replace ", " with "_"
+        res = res.replace(", ", "-")  # remove ", " with "-"
         res = res.replace(".", "o")  # replace dots with an "o"
         res = res.replace("'", "")  # remove 's from values of string variables
+        # Remove all the other left over mean charakters that might fuck with you
+        # bash scripting or wild card usage.
+        for mean_character in "[]()^ #%&!@:+={}'~":
+            res = res.replace(mean_character, "")
         if i is None:
             res += '*.pkl'
         else:
@@ -431,7 +458,7 @@ def even_time_series_spacing(dfi, N, t0=None, tN=None):
     Returns
     -------
     dfo : pandas dataframe
-        pandas dataframe with N regularly spaced
+        pandas dataframe with n regularly spaced
         time steps starting at t0 and ending at tN
         inclusively. Output data is interpolated from
         the input data.
