@@ -6,14 +6,18 @@ https://gist.github.com/minrk/2620876
 """
 import os
 import sys
-# import time
+import time
 # from Queue import Empty
+from subprocess import Popen
 from IPython.kernel import KernelManager
 from IPython.nbformat.current import reads
+Popen(["ipcluster", "start", "-n", "4"])
+time.sleep(5)
 
 
 def run_notebook(nb):
     """Run notebook."""
+
     km = KernelManager()
     km.start_kernel(stderr=open(os.devnull, 'w'))
     kc = km.client()
@@ -51,7 +55,9 @@ def run_notebook(nb):
 
 def test_tutorials():
     """Test tutorial notebooks."""
-    ipynbs = ["tutorial/01_tutorial.ipynb"]
+    ipynbs = ["tutorial/01_RunningAModel.ipynb",
+              "tutorial/02_LocalParallelization.ipynb",
+              "tutorial/03_EnsembleEvaluation.ipynb"]
     for ipynb in ipynbs:
         print "running %s" % ipynb
         with open(ipynb) as f:
