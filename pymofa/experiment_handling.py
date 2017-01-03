@@ -263,7 +263,6 @@ class experiment_handling(object):
             input_is_dataframe = True
         else:
             index_order = list(it.chain.from_iterable([self.index.values()]))
-            print index_order
             input_is_dataframe = False
 
         if self.amMaster:
@@ -307,7 +306,6 @@ class experiment_handling(object):
                             .sortlevel(level=1)
                     df.loc[mx, evakey] = eva_return
                 df.to_pickle(self.path_res + name)
-                print 'Post-processing done'
                 print 'saving to ', self.path_res + name
 
             # If nodes are available, distribute work amongst nodes.
