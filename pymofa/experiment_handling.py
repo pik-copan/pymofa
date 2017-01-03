@@ -293,7 +293,8 @@ class experiment_handling(object):
                     p, key = (self.parameter_combinations[p_index],
                               eva.keys()[k_index])
                     mx = tuple(p[k] for k in self.index.keys())
-                    fnames = np.sort(glob.glob(self.path_raw + self._get_ID(p)))
+                    fnames = np.sort(glob.glob(self.path_raw
+                                               + self._get_ID(p)))
                     eva_return = eva[key](fnames)
                     if input_is_dataframe:
                         stack = pd.DataFrame(eva_return.stack(dropna=False))
@@ -304,7 +305,7 @@ class experiment_handling(object):
                         eva_return = pd.DataFrame(stack,
                                                   index=stackIndex)\
                             .sortlevel(level=1)
-                    df.loc[mx, evakey] = eva_return
+                    df.loc[mx, key] = eva_return
                 df.to_pickle(self.path_res + name)
                 print 'saving to ', self.path_res + name
 
@@ -330,7 +331,7 @@ class experiment_handling(object):
                         self.comm.send(None, dest=source, tag=tags.EXIT)
                 elif tag == tags.DONE:
                     (mx, key, eva_return) = data
-                    df.loc[mx, evakey] = eva_return
+                    df.loc[mx, key] = eva_return
                     tasks_completed += 1
                     self._progress_report(tasks_completed, n_tasks,
                                           "Post-processing {} ..."
@@ -399,7 +400,8 @@ class experiment_handling(object):
         res = res.replace(", ", "-")  # remove ", " with "-"
         res = res.replace(".", "o")  # replace dots with an "o"
         res = res.replace("'", "")  # remove 's from values of string variables
-        # Remove all the other left over mean charakters that might fuck with you
+        # Remove all the other left over mean
+        # charakters that might fuck with you
         # bash scripting or wild card usage.
         for mean_character in "[]()^ #%&!@:+={}'~":
             res = res.replace(mean_character, "")
