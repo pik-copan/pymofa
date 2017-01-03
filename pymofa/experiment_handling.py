@@ -126,6 +126,7 @@ class experiment_handling(object):
             for p in self.parameter_combinations:
                 filename = self.path_raw + self._get_ID(p, s)
                 if not os.path.exists(filename):
+
                     self.tasks.append((p, filename))
         self.filenames = []
 
@@ -261,6 +262,8 @@ class experiment_handling(object):
                                ["timesteps", "observables"]]))
             input_is_dataframe = True
         else:
+            index_order = list(it.chain.from_iterable([self.index.values()]))
+            print index_order
             input_is_dataframe = False
 
         if self.amMaster:
@@ -274,8 +277,7 @@ class experiment_handling(object):
             mIndex = pd.MultiIndex.from_product(eff_params.values(),
                                                 names=eff_params.keys())
 
-            if input_is_dataframe:
-                mIndex = mIndex.reorder_levels(index_order)
+            mIndex = mIndex.reorder_levels(index_order)
 
             df = pd.DataFrame(index=mIndex)
 
