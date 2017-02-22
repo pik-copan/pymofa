@@ -24,6 +24,7 @@ import os
 import sys
 import glob
 import itertools as it
+import pickle as pkl
 import numpy as np
 import pandas as pd
 from scipy.interpolate import interp1d
@@ -142,7 +143,7 @@ class experiment_handling(object):
         ----------
         run_func : function
             The function the executes the Model for a given set of Parameters.
-            The first p paramters need to fit to the parameter_combinations.
+            The first P paramters need to fit to the parameter_combinations.
             The last parameter of run_func has to be named filename
             If run_func succeded, it returns >=0, else it returns < 0
         skipbadruns : bool (Default: False)
@@ -187,8 +188,7 @@ class experiment_handling(object):
                         self.comm.send(None, dest=source, tag=tags.EXIT)
                 elif tag == tags.FAILED:
                     # node failed to complete. retry
-                    old_task = n_return
-                    self.comm.send(old_task, dest=source, tag=tags.START)
+                    self.comm.send(n_return, dest=source, tag=tags.START)
                 elif tag == tags.DONE:
                     # node succeeded
                     result = n_return
@@ -225,7 +225,7 @@ class experiment_handling(object):
 
         self.comm.Barrier()
 
-    def resave(self, eva, name):
+    def resave(self, eva, name, sortlevel=0):
         """
         Postprocess the computed raw data.
 
@@ -242,6 +242,10 @@ class experiment_handling(object):
             The function must receive a list of filenames
         name : string
             The name of the saved macro quantity pickle file
+        sortlevel: int
+            level on which the eva_return output is sorted (in case of
+            dataframes) default is 0, but if the output is messed up,
+            changing to 1 usually helps. Who the fuck knows why..
         """
         # Prepare list of effective parameter combinations for MultiIndex
         eff_params = {self.index[k]: np.unique([p[k] for p in
@@ -297,15 +301,22 @@ class experiment_handling(object):
                                                + self._get_ID(p)))
                     eva_return = eva[key](fnames)
                     if input_is_dataframe:
-                        stack = pd.DataFrame(eva_return.stack(dropna=False))
+
+                        stack = eva_return.stack(level=0, dropna=False)
+
                         stackIndex = pd.MultiIndex(levels=stack.index.levels,
                                                    labels=stack.index.labels,
                                                    names=[u'timesteps',
                                                           u'observables'])
                         eva_return = pd.DataFrame(stack,
                                                   index=stackIndex)\
-                            .sortlevel(level=1)
+                            .sortlevel(level=sortlevel).values
+                    # common error here: eva_return and df are sorted on
+                    # different levels. Also, sometimes, the eva_results
+                    # have to be passed as values to the locator, other times,
+                    # this does not work. I don't know why.
                     df.loc[mx, key] = eva_return
+
                 df.to_pickle(self.path_res + name)
                 print 'saving to ', self.path_res + name
 
@@ -338,6 +349,8 @@ class experiment_handling(object):
                                           .format(source))
                 elif tag == tags.EXIT:
                     closed_nodes += 1
+
+            df.to_pickle(self.path_res + name)
             print 'Post-processing done'
 
         if self.amNode:
@@ -362,7 +375,8 @@ class experiment_handling(object):
                                                           u'observables'])
                         eva_return = pd.DataFrame(stack,
                                                   index=stackIndex)\
-                            .sortlevel(level=1)
+                            .sortlevel(level=0).values
+
                     self.comm.send((mx, key, eva_return), dest=self.master,
                                    tag=tags.DONE)
                 elif tag == tags.EXIT:
@@ -371,7 +385,59 @@ class experiment_handling(object):
             self.comm.send(None, dest=self.master, tag=tags.EXIT)
 
         self.comm.Barrier()
-        df.to_pickle(self.path_res + name)
+
+    def collect(self, eva, name):
+        """
+        Collect data from ensemble.
+
+        Can be used to collect data from all runs without any statistic
+        measurement.
+        Creates a dictionary with parameter combinations as keys and
+        Dataframes with data from all runs as content
+
+        Parameters
+        ----------
+        eva: dict of callables
+            Have to return a dataframe with one
+            column and an integer index with length equal to the
+            sample size of the experiment.
+        name: string
+            name of the data collection / save file
+        """
+        if self.amMaster:
+            print 'collecting ', name
+            # create save_path if it is not yet existing
+            if not os.path.exists(self.path_res):
+                os.makedirs(self.path_res)
+
+            # create dictionary:
+
+            dic = {}
+            n_tasks = len(self.parameter_combinations)
+
+            # iterate through all parameter combinations
+            for task_index in range(n_tasks):
+                # create Data frame for eva keys and sample size
+                df = pd.DataFrame(columns=eva.keys(),
+                                  index=range(self.sample_size))
+                # select parameters
+                p = self.parameter_combinations[task_index]
+                # keep variable parameters (those that are in the index dict)
+                mx = tuple(p[k] for k in self.index.keys())
+                # and compile a file list accordingly
+                fnames = np.sort(glob.glob(self.path_raw
+                                           + self._get_ID(p)))
+
+                # collect data according to eva
+                for key in eva.keys():
+                    df[key] = eva[key](fnames)
+                # and put it into the dict with descriptive parameter tuple as
+                # key
+                dic[mx] = df
+
+            with open(self.path_res + name, 'wb') as outfile:
+                pkl.dump(dic, outfile)
+            print 'saving to ', self.path_res + name
 
     @staticmethod
     def _get_ID(parameter_combination, i=None):
