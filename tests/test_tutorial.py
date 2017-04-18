@@ -9,8 +9,8 @@ import sys
 import time
 # from Queue import Empty
 from subprocess import Popen
-from IPython.kernel import KernelManager
-from IPython.nbformat.current import reads
+from jupyter_client.manager import KernelManager
+from nbformat.current import reads
 Popen(["ipcluster", "start", "-n", "4"])
 time.sleep(5)
 
@@ -36,17 +36,17 @@ def run_notebook(nb):
             reply = kc.get_shell_msg(timeout=20)['content']
             if reply['status'] == 'error':
                 failures += 1
-                print "\nFAILURE:"
-                print cell.input
-                print '-----'
-                print "raised:"
-                print '\n'.join(reply['traceback'])
+                print("\nFAILURE:")
+                print(cell.input)
+                print('-----')
+                print("raised:")
+                print('\n'.join(reply['traceback']))
             cells += 1
             sys.stdout.write('.')
     # print "ran notebook %s" % nb.metadata.name
-    print "    ran %3i cells" % cells
+    print("    ran %3i cells" % cells)
     if failures:
-        print "    %3i cells raised exceptions" % failures
+        print("    %3i cells raised exceptions" % failures)
     kc.stop_channels()
     km.shutdown_kernel()
     del km
@@ -59,7 +59,7 @@ def test_tutorials():
               "tutorial/02_LocalParallelization.ipynb",
               "tutorial/03_EnsembleEvaluation.ipynb"]
     for ipynb in ipynbs:
-        print "running %s" % ipynb
+        print("running %s" % ipynb)
         with open(ipynb) as f:
             nb = reads(f.read(), 'json')
         fails = run_notebook(nb)

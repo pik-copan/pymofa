@@ -296,20 +296,20 @@ if am_master:
         if available:
             # send name to call, args, time_est to slave:
             if _verbose:
-                print "MPI master : assigning call with id", id, "to slave", \
-                        slave, ":", name_to_call, args, kwargs, "..."
+                print("MPI master : assigning call with id", id, "to slave", \
+                        slave, ":", name_to_call, args, kwargs, "...")
             comm.send((name_to_call, args, kwargs, module, time_est),
                       dest=slave)
         else:
             # do it myself right now:
             slave = 0
             if _verbose:
-                print "MPI master : calling", name_to_call, args, kwargs, "..."
+                print("MPI master : calling", name_to_call, args, kwargs, "...")
             try:
                 object_to_call = eval(name_to_call,
                                       sys.modules[module].__dict__)
             except NameError:
-                sys.stderr.write(str(sys.modules[module].__dict__.keys()))
+                sys.stderr.write(str(list(sys.modules[module].__dict__.keys())))
                 raise
             call_time = time.time()
             results[id] = object_to_call(*args, **kwargs)
@@ -354,16 +354,16 @@ if am_master:
                                    ") called before get_result(" +
                                    str(slave_queue[source][0]) + ")!")
             if _verbose:
-                print "MPI master : retrieving result for call with id", id,\
-                        "from slave", source, "..."
+                print("MPI master : retrieving result for call with id", id,\
+                        "from slave", source, "...")
             (result, this_stats) = comm.recv(source=source)
             stats.append(this_stats)
             n_processed[source] = this_stats["n_processed"]
             total_time[source] = this_stats["total_time"]
         else:
             if _verbose:
-                print "MPI master : returning result for call with id", id, \
-                        "..."
+                print("MPI master : returning result for call with id", id, \
+                        "...")
             result = results[id]
             # TODO: rather return a copy and del the original?
         queue.remove(id)
@@ -402,7 +402,7 @@ if am_master:
 
         if available:
             slave_quotients = total_time/total_time_est
-            print("\n" +
+            print(("\n" +
                   "MPI: processing statistics\n" +
                   "     =====================\n" +
                   "     results collected:         " +
@@ -432,9 +432,9 @@ if am_master:
                   "     std.dev. of time per slave: " +
                   str(total_time.std()) + "\n" +
                   "     coeff. of var. of actual over estd. time per slave: " +
-                  str(slave_quotients.std()/slave_quotients.mean()) + "\n")
+                  str(slave_quotients.std()/slave_quotients.mean()) + "\n"))
         else:
-            print("\n" +
+            print(("\n" +
                   "MPI: processing statistics\n" +
                   "     =====================\n" +
                   "     results collected:         " +
@@ -448,7 +448,7 @@ if am_master:
                   "     std.dev. of time per call: " +
                   str(call_times.std()) + "\n" +
                   "     coeff. of var. of actual over estd. time per call: " +
-                  str(call_quotients.std()/call_quotients.mean()) + "\n")
+                  str(call_quotients.std()/call_quotients.mean()) + "\n"))
 
     def terminate():
         """
@@ -461,8 +461,8 @@ if am_master:
             # tell slaves to terminate:
             for slave in range(1, size):
                 if _verbose:
-                    print ("MPI master : telling slave", slave,
-                           "to terminate...")
+                    print(("MPI master : telling slave", slave,
+                           "to terminate..."))
                 comm.send(("terminate", (), {}, "", 0), dest=slave)
             available = False
 
@@ -474,7 +474,7 @@ if am_master:
         """
         traceback.print_exc()
         if _verbose:
-            print "MPI master : aborting..."
+            print("MPI master : aborting...")
         comm.Abort()
 
 else:  # am_slave and available:
@@ -504,7 +504,7 @@ else:  # am_slave and available:
         mpi.run().
         """
         if _verbose:
-            print "MPI slave ", rank, ": waiting for calls."
+            print("MPI slave ", rank, ": waiting for calls.")
         # wait for orders:
         while True:
             # get next task from queue:
@@ -513,16 +513,16 @@ else:  # am_slave and available:
             # TODO: add some timeout and check whether master lives!
             if name_to_call == "terminate":
                 if _verbose:
-                    print "MPI slave", rank, ": terminating..."
+                    print("MPI slave", rank, ": terminating...")
                 break
             if _verbose:
-                print "MPI slave", rank, ": calling", name_to_call,\
-                        args, "..."
+                print("MPI slave", rank, ": calling", name_to_call,\
+                        args, "...")
             try:
                 object_to_call = eval(name_to_call,
                                       sys.modules[module].__dict__)
             except NameError:
-                sys.stderr.write(str(sys.modules[module].__dict__.keys()))
+                sys.stderr.write(str(list(sys.modules[module].__dict__.keys())))
                 raise
             total_time_est[rank] += time_est
             call_time = time.time()
@@ -535,13 +535,13 @@ else:  # am_slave and available:
                           "n_processed": n_processed[rank],
                           "total_time": time.time() - start_time})
             if _verbose:
-                print "MPI slave", rank, ": sending result..."
+                print("MPI slave", rank, ": sending result...")
             comm.send((result, stats[-1]), dest=0)
 
     def abort():
         traceback.print_exc()
         if _verbose:
-            print "MPI slave", rank, ": aborting..."
+            print("MPI slave", rank, ": aborting...")
         comm.Abort()
 
     # TODO: update total_time_est at return time
@@ -580,19 +580,19 @@ def run(verbose=False, master_func=None):
     if available:  # run in mpi mode
         if am_master:  # I'm master
             if verbose:
-                print "MPI master : started, using", size-1, "slaves."
+                print("MPI master : started, using", size-1, "slaves.")
             try:  # put everything in a try block to be able to terminate!
                 if master_func is not None:
                     master_func()
                 elif "master" in _globals:
                     _globals["master"]()
                 else:
-                    print "MPI master : function master() not found!"
+                    print("MPI master : function master() not found!")
             except:
                 abort()
             terminate()
             if verbose:
-                print "MPI master : finished."
+                print("MPI master : finished.")
         else:  # I'm slave
             if "slave" in _globals:
                 _globals["slave"]()
@@ -600,12 +600,12 @@ def run(verbose=False, master_func=None):
                 serve()
     else:  # run as single processor
         if verbose:
-            print "MPI master : not available, running as a single process."
+            print("MPI master : not available, running as a single process.")
         if master_func is not None:
             master_func()
         elif "master" in _globals:
             _globals["master"]()
         else:
-            print "MPI master : function master() not found!"
+            print("MPI master : function master() not found!")
         if verbose:
-            print "MPI master : finished."
+            print("MPI master : finished.")
