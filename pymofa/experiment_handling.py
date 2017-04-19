@@ -152,7 +152,7 @@ class experiment_handling(object):
             recalculated, than set to "True". Possible reason: speed.
         """
         assert (callable(run_func)), "run_func must be callable"
-        assert (type(skipbadruns) is bool), "scipbadruns must be boolean"
+        assert (isinstance(skipbadruns, bool)), "scipbadruns must be boolean"
         if self.amMaster:
             # check, if path exists. If not, create.
             if not os.path.exists(self.path_raw):
@@ -190,7 +190,8 @@ class experiment_handling(object):
                     else:
                         self.comm.send(None, dest=source, tag=tags.EXIT)
                 elif tag == tags.FAILED:
-                    # node failed to complete. retry (failed runs send their task as return)
+                    # node failed to complete.
+                    # retry (failed runs send their task as return)
                     self.comm.send(n_return, dest=source, tag=tags.START)
                 elif tag == tags.DONE:
                     # node succeeded
@@ -201,8 +202,7 @@ class experiment_handling(object):
                 elif tag == tags.EXIT:
                     # node completed all tasks. close
                     closed_nodes += 1
-            print()
-            "Calculating 0 ...done."
+            print("Calculating 0 ...done.")
 
         if self.amNode:
             # Nodes work as follows:
@@ -257,19 +257,22 @@ class experiment_handling(object):
 
         # if eva returns a data frame,
         # add the indices and column names to the list of effective parameters.
-        eva_return = [eva[evakey](np.sort(glob.glob(self.path_raw +
-                                                    self._get_ID(self.parameter_combinations[0]))))
+        eva_return = [eva[evakey](
+            np.sort(glob.glob(self.path_raw +
+                              self._get_ID(self.parameter_combinations[0]))))
                       for evakey in list(eva.keys())]
 
         if isinstance(eva_return[0], pd.core.frame.DataFrame) and \
                 not isinstance(eva_return[0].index, pd.core.index.MultiIndex):
             eff_params['timesteps'] = eva_return[0].index.values
             eff_params['observables'] = eva_return[0].columns.values
-            index_order = list(it.chain.from_iterable([list(self.index.values()),
-                                                       ["timesteps", "observables"]]))
+            index_order = \
+                list(it.chain.from_iterable([list(self.index.values()),
+                                            ["timesteps", "observables"]]))
             input_is_dataframe = True
         else:
-            index_order = list(it.chain.from_iterable([list(self.index.values())]))
+            index_order = \
+                list(it.chain.from_iterable([list(self.index.values())]))
             input_is_dataframe = False
 
         if self.amMaster:
@@ -295,10 +298,10 @@ class experiment_handling(object):
 
             # Check if nodes are available. If not, do serial computation.
             if self.n_nodes < 1:
-                print()
-                "Only one node available. No parallel execution."
+                print("Only one node available. No parallel execution.")
                 for task_index in range(n_tasks):
-                    p_index, k_index = divmod(task_index, len(list(eva.keys())))
+                    p_index, k_index = divmod(task_index,
+                                              len(list(eva.keys())))
                     p, key = (self.parameter_combinations[p_index],
                               list(eva.keys())[k_index])
                     mx = tuple(p[k] for k in list(self.index.keys()))
@@ -336,7 +339,8 @@ class experiment_handling(object):
                     # node ready to work.
                     if task_index < n_tasks:
                         # if there is work, distribute it
-                        p_index, k_index = divmod(task_index, len(list(eva.keys())))
+                        p_index, k_index = divmod(task_index,
+                                                  len(list(eva.keys())))
                         task = (self.parameter_combinations[p_index],
                                 list(eva.keys())[k_index])
                         self.comm.send(task, dest=source, tag=tags.START)
@@ -355,8 +359,7 @@ class experiment_handling(object):
                     closed_nodes += 1
 
             df.to_pickle(self.path_res + name)
-            print()
-            'Post-processing done'
+            print('Post-processing done')
 
         if self.amNode:
             # Nodes work as follows:
@@ -369,7 +372,8 @@ class experiment_handling(object):
                     # go work:
                     (p, key) = task
                     mx = tuple(p[k] for k in list(self.index.keys()))
-                    fnames = np.sort(glob.glob(self.path_raw + self._get_ID(p)))
+                    fnames = np.sort(glob.glob(self.path_raw
+                                               + self._get_ID(p)))
                     eva_return = eva[key](fnames)
                     if input_is_dataframe:
                         stack = pd.DataFrame(eva_return.stack(dropna=False))

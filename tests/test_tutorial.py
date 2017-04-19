@@ -1,4 +1,5 @@
-"""Test the ipython notebook tutorials.
+"""
+Test the ipython notebook tutorials.
 
 Inspiration
 -----------
@@ -17,7 +18,6 @@ time.sleep(5)
 
 def run_notebook(nb):
     """Run notebook."""
-
     km = KernelManager()
     km.start_kernel(stderr=open(os.devnull, 'w'))
     kc = km.client()
