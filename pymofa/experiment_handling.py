@@ -285,7 +285,8 @@ class experiment_handling(object):
 
             m_index = m_index.reorder_levels(index_order)
 
-            df = pd.DataFrame(index=m_index)
+            # make sure, index is sorted, so passing of data works out.
+            df = pd.DataFrame(index=m_index).sortlevel(level=-1)
 
             task_index = 0
             tasks_completed = 0
@@ -313,7 +314,7 @@ class experiment_handling(object):
                                                            'observables'])
                         eva_return = pd.DataFrame(stack,
                                                   index=stack_index) \
-                            .sortlevel(level=sortlevel).values
+                            .sortlevel(level=-1).values
                     # common error here: eva_return and df are sorted on
                     # different levels. Also, sometimes, the eva_results
                     # have to be passed as values to the locator, other times,
@@ -378,7 +379,7 @@ class experiment_handling(object):
                                                            'observables'])
                         eva_return = pd.DataFrame(stack,
                                                   index=stack_index) \
-                            .sortlevel(level=0).values
+                            .sortlevel(level=-1).values
 
                     self.comm.send((mx, key, eva_return), dest=self.master,
                                    tag=tags.DONE)
