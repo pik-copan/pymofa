@@ -22,6 +22,8 @@ resaving is parallelized such that parameter combinations are
 distributed amongs nodes. For small sample sizes, a serial
 implementation could be faster due to overhead...
 """
+from __future__ import print_function
+
 import os
 import sys
 import glob
@@ -41,7 +43,7 @@ def enum(*sequential, **named):
     Example
     -------
     >>> Numbers = enum(ONE=1, TWO=2, THREE='three')
-    >>> Numbers.ONE
+>>> Numbers.ONE
     1
     >>> Numbers.TWO
     2
@@ -64,7 +66,7 @@ class experiment_handling(object):
     """Class doc string."""
 
     def __init__(self, sample_size, parameter_combinations, index, path_raw,
-                 path_res='./data/'):
+                 path_res='./data/', use_kwargs=False):
         """
         Set up the experiment handling class.
 
@@ -97,7 +99,15 @@ class experiment_handling(object):
             absolute path to the post processed data
         """
         self.sample_size = sample_size
+
+        self.kwparameter_combinations = [{index[i]: params[i]
+                                        for i in range(min(len(params),
+                                                           len(index.keys())))}
+                                        for params
+                                        in parameter_combinations]
+
         self.parameter_combinations = parameter_combinations
+        self.use_kwargs = use_kwargs
         self.index = index
 
         # add "/" to paths if missing
@@ -125,11 +135,16 @@ class experiment_handling(object):
         # create list of tasks (parameter_combs*sample_size)
         # and paths to save the results.
         self.tasks = []
+
         for s in range(self.sample_size):
-            for p in self.parameter_combinations:
+            for p, kwp in zip(self.parameter_combinations, self.kwparameter_combinations):
                 filename = self.path_raw + self._get_ID(p, s)
                 if not os.path.exists(filename):
-                    self.tasks.append((p, filename))
+                    if self.use_kwargs:
+                        self.tasks.append((kwp, filename))
+                    else:
+                        self.tasks.append((p, filename))
+
         self.filenames = []
 
     def compute(self, run_func, skipbadruns=False):
@@ -166,13 +181,18 @@ class experiment_handling(object):
             # check if nodes are available. If not, do serial calculation.
             if self.n_nodes < 1:
                 print("Only one node available. No parallel execution.")
+
                 for task in self.tasks:
                     (params, filename) = task
                     result = -1
                     while result < 0:
-                        result = run_func(*params, filename=filename)
+                        if self.use_kwargs:
+                            result = run_func(filename=filename, **params)
+                        else:
+                            result = run_func(*params, filename=filename)
 
             print("Splitting calculations to {} nodes.".format(self.n_nodes))
+
             task_index = 0
             tasks_completed = 0
             closed_nodes = 0
@@ -216,7 +236,10 @@ class experiment_handling(object):
                 if tag == tags.START:
                     # go work:
                     (params, filename) = task
-                    result = run_func(*params, filename=filename)
+                    if self.use_kwargs:
+                        result = run_func(filename=filename, **params)
+                    else:
+                        result = run_func(*params, filename=filename)
                     if result >= 0:
                         self.comm.send(result, dest=self.master, tag=tags.DONE)
                     else:
@@ -251,9 +274,17 @@ class experiment_handling(object):
             changing to 1 usually helps. Who the fuck knows why..
         """
         # Prepare list of effective parameter combinations for MultiIndex
-        eff_params = {self.index[k]: np.unique([p[k] for p in
-                                                self.parameter_combinations])
-                      for k in list(self.index.keys())}
+
+        if self.use_kwargs:
+            eff_params = {self.index[k]:
+                              np.unique([p[self.index[k]]
+                                         for p in self.kwparameter_combinations])
+                          for k in self.index.keys()}
+        else:
+            eff_params = {self.index[k]:
+                              np.unique([p[k]
+                                         for p in self.parameter_combinations])
+                          for k in self.index.keys()}
 
         # if eva returns a data frame,
         # add the indices and column names to the list of effective parameters.
@@ -278,6 +309,7 @@ class experiment_handling(object):
         if self.amMaster:
             print('processing ', name)
             print('under operators ', list(eva.keys()))
+
             # create save_path if it is not yet existing
             if not os.path.exists(self.path_res):
                 os.makedirs(self.path_res)
