@@ -500,10 +500,9 @@ class experiment_handling(object):
         msg : string
             (optional) a preceding string
         """
-        percent = str(int(np.around(float(i) / loop_length, 2) * 100))
         sys.stdout.write("\r")
         sys.stdout.flush()
-        sys.stdout.write(msg + " [" + percent + "%] ")
+        sys.stdout.write("{} {:.2%}".format(msg, float(i)/float(loop_length)))
         sys.stdout.flush()
 
         if i == loop_length - 1:
@@ -581,3 +580,10 @@ def even_time_series_spacing(dfi, n, t0=None, t_n=None):
     dfo = pd.DataFrame(data_points, index=timestamps)
 
     return dfo
+
+if __name__ == '__main__':
+    eh = experiment_handling(sample_size=10,
+                             parameter_combinations=(1, 2),
+                             index={'phi': 1},
+                             path_raw='./')
+    eh._progress_report(1, 10, msg='bla')
