@@ -32,6 +32,11 @@ import pickle as pkl
 import numpy as np
 import pandas as pd
 from scipy.interpolate import interp1d
+from operator import mul
+try:
+    from functools import reduce
+finally:
+    pass
 
 from mpi4py import MPI
 
@@ -286,6 +291,8 @@ class experiment_handling(object):
                                          for p in self.parameter_combinations])
                           for k in self.index.keys()}
 
+        index_names = [key for key in eff_params]
+
         # if eva returns a data frame,
         # add the indices and column names to the list of effective parameters.
         eva_return = [eva[evakey](
@@ -293,21 +300,27 @@ class experiment_handling(object):
                               self._get_ID(self.parameter_combinations[0]))))
                       for evakey in list(eva.keys())]
 
+        # if the eva returns a dataframe, add names to eff_params
         if isinstance(eva_return[0], pd.core.frame.DataFrame) and \
                 not isinstance(eva_return[0].index, pd.core.index.MultiIndex):
+
+            index_names += ['timesteps', 'observables']
+
             eff_params['timesteps'] = eva_return[0].index.values
             eff_params['observables'] = eva_return[0].columns.values
-            index_order = \
-                list(it.chain.from_iterable([list(self.index.values()),
-                                            ["timesteps", "observables"]]))
+
             input_is_dataframe = True
+
+        # else, do nothing
         else:
-            index_order = \
-                list(it.chain.from_iterable([list(self.index.values())]))
             input_is_dataframe = False
 
+        index_order = index_names
+        n_index_levels = len(index_names)
+        print(n_index_levels, index_names)
+
         if self.amMaster:
-            print('processing ', name)
+            print('processing: ', name)
             print('under operators ', list(eva.keys()))
 
             # create save_path if it is not yet existing
@@ -315,13 +328,15 @@ class experiment_handling(object):
                 os.makedirs(self.path_res)
 
             # Create MultiIndex and Dataframe
-            m_index = pd.MultiIndex.from_product(list(eff_params.values()),
-                                                 names=list(eff_params.keys()))
-
-            m_index = m_index.reorder_levels(index_order)
+            m_index = pd.MultiIndex(levels=[[]]*n_index_levels,
+                                    labels=[[]]*n_index_levels,
+                                    names=index_names)
+            print(m_index)
 
             # make sure, index is sorted, so passing of data works out.
-            df = pd.DataFrame(index=m_index).sortlevel(level=-1)
+            df = pd.DataFrame(index=m_index)
+
+            print(df)
 
             task_index = 0
             tasks_completed = 0
@@ -341,21 +356,32 @@ class experiment_handling(object):
                                                + self._get_ID(p)))
                     eva_return = eva[key](fnames)
                     if input_is_dataframe:
-                        stack = eva_return.stack(level=0, dropna=False)
+                        # create data frame with additional levels in index
+                        eva_return = eva_return.stack(level=0)
+                        # therefore, first create the multi index.
+                        # 1) find length of labels
+                        label_length = reduce(mul, [len(l) for l in eva_return.index.levels])
+                        # 2) add new levels to labels (being zero, since new
+                        # index levels have constant values
+                        index_labels = [[0]*label_length]*(len(p) + 1) \
+                                       + eva_return.index.labels
+                        # 3) add new index levels to the old ones
+                        index_levels = [[key]] + [[l] for l in p] \
+                                       + eva_return.index.levels
+                        # 4) and fill it all into the multi index
+                        m_index = pd.MultiIndex(levels=index_levels,
+                                                labels=index_labels,
+                                                names=['key'] + index_names)
+                        # then create the dataframe
+                        eva_return = pd.DataFrame(index=m_index,
+                                          data=eva_return.values)
+                    elif not input_is_dataframe:
+                        print('Not Yet Implemented')
+                        pass
 
-                        stack_index = pd.MultiIndex(levels=stack.index.levels,
-                                                    labels=stack.index.labels,
-                                                    names=['timesteps',
-                                                           'observables'])
-                        eva_return = pd.DataFrame(stack,
-                                                  index=stack_index) \
-                            .sortlevel(level=-1).values
-                    # common error here: eva_return and df are sorted on
-                    # different levels. Also, sometimes, the eva_results
-                    # have to be passed as values to the locator, other times,
-                    # this does not work. I don't know why.
-                    df.loc[mx, key] = eva_return
+                    df = df.append(other=eva_return, verify_integrity=True)
 
+                df = df.unstack(level='key')
                 df.to_pickle(self.path_res + name)
                 print('saving to ', self.path_res + name)
 
@@ -382,7 +408,8 @@ class experiment_handling(object):
                         self.comm.send(None, dest=source, tag=tags.EXIT)
                 elif tag == tags.DONE:
                     (mx, key, eva_return) = data
-                    df.loc[mx, key] = eva_return
+                    df = df.append(eva_return)
+#                    print(df.loc[mx, key].sort_index(level=['observables']))
                     tasks_completed += 1
                     self._progress_report(tasks_completed, n_tasks,
                                           "Post-processing {} ..."
@@ -390,6 +417,7 @@ class experiment_handling(object):
                 elif tag == tags.EXIT:
                     closed_nodes += 1
 
+            df = df.unstack(level='key')
             df.to_pickle(self.path_res + name)
             print('Post-processing done')
 
@@ -408,14 +436,28 @@ class experiment_handling(object):
                                                + self._get_ID(p)))
                     eva_return = eva[key](fnames)
                     if input_is_dataframe:
-                        stack = pd.DataFrame(eva_return.stack(dropna=False))
-                        stack_index = pd.MultiIndex(levels=stack.index.levels,
-                                                    labels=stack.index.labels,
-                                                    names=['timesteps',
-                                                           'observables'])
-                        eva_return = pd.DataFrame(stack,
-                                                  index=stack_index) \
-                            .sortlevel(level=-1).values
+                        # create data frame with additional levels in index
+                        eva_return = eva_return.stack(level=0)
+                        # therefore, first create the multi index.
+                        # 1) find length of labels
+                        label_length = reduce(mul, [len(l) for l in eva_return.index.levels])
+                        # 2) add new levels to labels (being zero, since new
+                        # index levels have constant values
+                        index_labels = [[0]*label_length]*(len(p) + 1) \
+                                       + eva_return.index.labels
+                        # 3) add new index levels to the old ones
+                        index_levels = [[key]] + [[l] for l in p] \
+                                       + eva_return.index.levels
+                        # 4) and fill it all into the multi index
+                        m_index = pd.MultiIndex(levels=index_levels,
+                                                labels=index_labels,
+                                                names=['key'] + index_names)
+                        # then create the dataframe
+                        eva_return = pd.DataFrame(index=m_index,
+                                          data=eva_return.values)
+                    elif not input_is_dataframe:
+                        print('Not Yet Implemented')
+                        pass
 
                     self.comm.send((mx, key, eva_return), dest=self.master,
                                    tag=tags.DONE)
