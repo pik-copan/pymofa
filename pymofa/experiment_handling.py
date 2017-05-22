@@ -381,7 +381,7 @@ class experiment_handling(object):
 
                     df = df.append(other=eva_return, verify_integrity=True)
 
-
+                df = df.unstack(level='key')
                 df.to_pickle(self.path_res + name)
                 print('saving to ', self.path_res + name)
 
@@ -416,7 +416,8 @@ class experiment_handling(object):
                                           .format(source))
                 elif tag == tags.EXIT:
                     closed_nodes += 1
-            print(df.unstack(level='key'))
+
+            df = df.unstack(level='key')
             df.to_pickle(self.path_res + name)
             print('Post-processing done')
 
