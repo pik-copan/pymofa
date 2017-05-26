@@ -24,19 +24,13 @@ implementation could be faster due to overhead...
 """
 from __future__ import print_function
 
+import glob
 import os
 import sys
-import glob
-import itertools as it
-import pickle as pkl
+
 import numpy as np
 import pandas as pd
 from scipy.interpolate import interp1d
-from operator import mul
-try:
-    from functools import reduce
-finally:
-    pass
 
 from mpi4py import MPI
 
@@ -105,11 +99,10 @@ class experiment_handling(object):
         """
         self.sample_size = sample_size
 
-        self.kwparameter_combinations = [{index[i]: params[i]
-                                        for i in range(min(len(params),
-                                                           len(index.keys())))}
-                                        for params
-                                        in parameter_combinations]
+        self.kwparameter_combinations = \
+            [{index[i]: params[i]
+              for i in range(min(len(params), len(index.keys())))}
+             for params in parameter_combinations]
 
         self.parameter_combinations = parameter_combinations
         self.use_kwargs = use_kwargs
@@ -142,7 +135,8 @@ class experiment_handling(object):
         self.tasks = []
 
         for s in range(self.sample_size):
-            for p, kwp in zip(self.parameter_combinations, self.kwparameter_combinations):
+            for p, kwp in zip(self.parameter_combinations,
+                              self.kwparameter_combinations):
                 filename = self.path_raw + self._get_ID(p, s)
                 if not os.path.exists(filename):
                     if self.use_kwargs:
@@ -256,7 +250,7 @@ class experiment_handling(object):
 
         self.comm.Barrier()
 
-    def resave(self, eva, name, sortlevel=0):
+    def resave(self, eva, name):
         """
         Postprocess the computed raw data.
 
@@ -273,22 +267,18 @@ class experiment_handling(object):
             The function must receive a list of filenames
         name : string
             The name of the saved macro quantity pickle file
-        sortlevel: int
-            level on which the eva_return output is sorted (in case of
-            dataframes) default is 0, but if the output is messed up,
-            changing to 1 usually helps. Who the fuck knows why..
         """
         # Prepare list of effective parameter combinations for MultiIndex
 
         if self.use_kwargs:
             eff_params = {self.index[k]:
-                              np.unique([p[self.index[k]]
-                                         for p in self.kwparameter_combinations])
+                          np.unique([p[self.index[k]]
+                                     for p in self.kwparameter_combinations])
                           for k in self.index.keys()}
         else:
             eff_params = {self.index[k]:
-                              np.unique([p[k]
-                                         for p in self.parameter_combinations])
+                          np.unique([p[k]
+                                     for p in self.parameter_combinations])
                           for k in self.index.keys()}
 
         index_names = [key for key in eff_params]
@@ -309,15 +299,13 @@ class experiment_handling(object):
             eff_params['timesteps'] = eva_return[0].index.values
             eff_params['observables'] = eva_return[0].columns.values
 
-            input_is_dataframe = True
+            process_df = True
 
         # else, do nothing
         else:
-            input_is_dataframe = False
+            process_df = False
 
-        index_order = index_names
         n_index_levels = len(index_names)
-        print(n_index_levels, index_names)
 
         if self.amMaster:
             print('processing: ', name)
@@ -327,17 +315,14 @@ class experiment_handling(object):
             if not os.path.exists(self.path_res):
                 os.makedirs(self.path_res)
 
-            # Create MultiIndex and Dataframe
+            # Create empty MultiIndex and Dataframe
             m_index = pd.MultiIndex(levels=[[]]*n_index_levels,
                                     labels=[[]]*n_index_levels,
                                     names=index_names)
-            print(m_index)
 
-            # make sure, index is sorted, so passing of data works out.
             df = pd.DataFrame(index=m_index)
 
-            print(df)
-
+            # initialize counters for work sharing amongst nodes
             task_index = 0
             tasks_completed = 0
             n_tasks = len(self.parameter_combinations) * len(list(eva.keys()))
@@ -351,39 +336,23 @@ class experiment_handling(object):
                                               len(list(eva.keys())))
                     p, key = (self.parameter_combinations[p_index],
                               list(eva.keys())[k_index])
-                    mx = tuple(p[k] for k in list(self.index.keys()))
                     fnames = np.sort(glob.glob(self.path_raw
                                                + self._get_ID(p)))
-                    eva_return = eva[key](fnames)
-                    if input_is_dataframe:
-                        # create data frame with additional levels in index
-                        eva_return = eva_return.stack(level=0)
-                        # therefore, first create the multi index.
-                        # 1) find length of labels
-                        label_length = reduce(mul, [len(l) for l in eva_return.index.levels])
-                        # 2) add new levels to labels (being zero, since new
-                        # index levels have constant values
-                        index_labels = [[0]*label_length]*(len(p) + 1) \
-                                       + eva_return.index.labels
-                        # 3) add new index levels to the old ones
-                        index_levels = [[key]] + [[l] for l in p] \
-                                       + eva_return.index.levels
-                        # 4) and fill it all into the multi index
-                        m_index = pd.MultiIndex(levels=index_levels,
-                                                labels=index_labels,
-                                                names=['key'] + index_names)
-                        # then create the dataframe
-                        eva_return = pd.DataFrame(index=m_index,
-                                          data=eva_return.values)
-                    elif not input_is_dataframe:
-                        print('Not Yet Implemented')
-                        pass
+
+                    eva_return = \
+                        self._process_eva_output(eva=eva,
+                                                 index_names=index_names,
+                                                 key=key,
+                                                 p=p,
+                                                 fnames=fnames,
+                                                 process_df=process_df)
 
                     df = df.append(other=eva_return, verify_integrity=True)
 
                 df = df.unstack(level='key')
                 df.to_pickle(self.path_res + name)
                 print('saving to ', self.path_res + name)
+                return
 
             # If nodes are available, distribute work amongst nodes.
 
@@ -409,7 +378,6 @@ class experiment_handling(object):
                 elif tag == tags.DONE:
                     (mx, key, eva_return) = data
                     df = df.append(eva_return)
-#                    print(df.loc[mx, key].sort_index(level=['observables']))
                     tasks_completed += 1
                     self._progress_report(tasks_completed, n_tasks,
                                           "Post-processing {} ..."
@@ -434,30 +402,14 @@ class experiment_handling(object):
                     mx = tuple(p[k] for k in list(self.index.keys()))
                     fnames = np.sort(glob.glob(self.path_raw
                                                + self._get_ID(p)))
-                    eva_return = eva[key](fnames)
-                    if input_is_dataframe:
-                        # create data frame with additional levels in index
-                        eva_return = eva_return.stack(level=0)
-                        # therefore, first create the multi index.
-                        # 1) find length of labels
-                        label_length = reduce(mul, [len(l) for l in eva_return.index.levels])
-                        # 2) add new levels to labels (being zero, since new
-                        # index levels have constant values
-                        index_labels = [[0]*label_length]*(len(p) + 1) \
-                                       + eva_return.index.labels
-                        # 3) add new index levels to the old ones
-                        index_levels = [[key]] + [[l] for l in p] \
-                                       + eva_return.index.levels
-                        # 4) and fill it all into the multi index
-                        m_index = pd.MultiIndex(levels=index_levels,
-                                                labels=index_labels,
-                                                names=['key'] + index_names)
-                        # then create the dataframe
-                        eva_return = pd.DataFrame(index=m_index,
-                                          data=eva_return.values)
-                    elif not input_is_dataframe:
-                        print('Not Yet Implemented')
-                        pass
+
+                    eva_return = \
+                        self._process_eva_output(eva=eva,
+                                                 index_names=index_names,
+                                                 key=key,
+                                                 p=p,
+                                                 fnames=fnames,
+                                                 process_df=process_df)
 
                     self.comm.send((mx, key, eva_return), dest=self.master,
                                    tag=tags.DONE)
@@ -468,58 +420,69 @@ class experiment_handling(object):
 
         self.comm.Barrier()
 
-    def collect(self, eva, name):
+    def _process_eva_output(self, eva, index_names,
+                            p, key, fnames, process_df):
         """
-        Collect data from ensemble.
-
-        Can be used to collect data from all runs without any statistic
-        measurement.
-        Creates a dictionary with parameter combinations as keys and
-        Dataframes with data from all runs as content
+        processes the output of the callable eva[key] to yield a
+        pandas data frame that can be appended to the final data structure.
 
         Parameters
         ----------
-        eva: dict of callables
-            Have to return a dataframe with one
-            column and an integer index with length equal to the
-            sample size of the experiment.
-        name: string
-            name of the data collection / save file
+        eva: dict as {<name of macro-quantities> : function how to compute it}
+             The function must receive a list of file names,
+        index_names: list
+            list of variable names to include in the resulting
+            data frames index,
+        p: tuple
+            values for variables that are to include in the
+            resulting data frames index,
+        key: key for eva dict
+        fnames: list
+            list of file names to interpret by eva,
+        process_df: bool
+            indicator whether the return of eva is a data frame.
+
+        Returns
+        -------
+        eva_return: pandas Dataframe
+
         """
-        if self.amMaster:
-            print('collecting ', name)
-            # create save_path if it is not yet existing
-            if not os.path.exists(self.path_res):
-                os.makedirs(self.path_res)
-
-            # create dictionary:
-
-            dic = {}
-            n_tasks = len(self.parameter_combinations)
-
-            # iterate through all parameter combinations
-            for task_index in range(n_tasks):
-                # create Data frame for eva keys and sample size
-                df = pd.DataFrame(columns=list(eva.keys()),
-                                  index=list(range(self.sample_size)))
-                # select parameters
-                p = self.parameter_combinations[task_index]
-                # keep variable parameters (those that are in the index dict)
-                mx = tuple(p[k] for k in list(self.index.keys()))
-                # and compile a file list accordingly
-                fnames = np.sort(glob.glob(self.path_raw
-                                           + self._get_ID(p)))
-
-                # collect data according to eva
-                for key in list(eva.keys()):
-                    df[key] = eva[key](fnames)
-                # and put it into the dict with descriptive parameter tuple as
-                # key
-                dic[mx] = df
-
-            with open(self.path_res + name, 'wb') as outfile:
-                pkl.dump(dic, outfile)
-            print('saving to ', self.path_res + name)
+        eva_return = eva[key](fnames)
+        if process_df:
+            # create data frame with additional levels in index
+            eva_return = eva_return.stack(level=0)
+            # therefore, first create the multi index.
+            # 1) find length of labels
+            label_length = len(eva_return.index.labels[0])
+            # 2) add new levels to labels (being zero, since new
+            # index levels have constant values
+            index_labels = [[0] * label_length] \
+                * (len(self.index.keys()) + 1) \
+                + eva_return.index.labels
+            # 3) add new index levels to the old ones
+            index_levels = [[key]] + [[list(p)[l]]
+                                      for l in self.index.keys()] \
+                + eva_return.index.levels
+            # 4) and fill it all into the multi index
+            m_index = pd.MultiIndex(levels=index_levels,
+                                    labels=index_labels,
+                                    names=['key'] + index_names)
+            # then create the data frame
+            return pd.DataFrame(index=m_index,
+                                data=eva_return.values)
+        elif not process_df:
+            # same as above but without levels and labels from eva return
+            label_length = 1
+            index_labels = [[0] * label_length] \
+                * (len(self.index.keys()) + 1)
+            index_levels = [[key]] + [[list(p)[l]]
+                                      for l in self.index.keys()]
+            tmp_index_names = ['key'] + index_names
+            m_index = pd.MultiIndex(levels=index_levels,
+                                    labels=index_labels,
+                                    names=tmp_index_names)
+            return pd.DataFrame(index=m_index,
+                                data=[eva_return])
 
     @staticmethod
     def _get_ID(parameter_combination, i=None):
@@ -655,9 +618,9 @@ def even_time_series_spacing(dfi, n, t0=None, t_n=None):
 
     return dfo
 
+
 if __name__ == '__main__':
     eh = experiment_handling(sample_size=10,
                              parameter_combinations=(1, 2),
                              index={'phi': 1},
                              path_raw='./')
-    eh._progress_report(1, 10, msg='bla')
