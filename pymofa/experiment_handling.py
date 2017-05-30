@@ -349,11 +349,6 @@ class experiment_handling(object):
 
                     df = df.append(other=eva_return, verify_integrity=True)
 
-                df = df.unstack(level='key')
-                df.to_pickle(self.path_res + name)
-                print('saving to ', self.path_res + name)
-                return
-
             # If nodes are available, distribute work amongst nodes.
 
             while closed_nodes < self.n_nodes:
@@ -386,6 +381,7 @@ class experiment_handling(object):
                     closed_nodes += 1
 
             df = df.unstack(level='key')
+            df.columns = df.columns.droplevel()
             df.to_pickle(self.path_res + name)
             print('Post-processing done')
 
