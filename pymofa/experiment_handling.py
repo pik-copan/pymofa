@@ -281,7 +281,8 @@ class experiment_handling(object):
                                      for p in self.parameter_combinations])
                           for k in self.index.keys()}
 
-        index_names = [key for key in eff_params]
+        index_names = [self.index[key] for key in range(len(self.index))]
+        print(index_names)
 
         # if eva returns a data frame,
         # add the indices and column names to the list of effective parameters.
