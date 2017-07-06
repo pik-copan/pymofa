@@ -114,15 +114,18 @@ class experiment_handling(object):
         self.path_res = path_res + "/" if not path_res.endswith("/") else \
             path_res
 
+        # load mpi4py MPI environment and get size and ranks
         self.comm = MPI.COMM_WORLD
         self.status = MPI.Status()
         self.size = self.comm.Get_size()
         self.rank = self.comm.Get_rank()
 
+        # split size of environment in 1 master and n-1 slaves
         self.master = 0
         self.nodes = list(range(1, self.size))
         self.n_nodes = self.size - 1
 
+        # tell process whether it is master or slave
         if self.rank == 0:
             self.amMaster = True
             self.amNode = False
