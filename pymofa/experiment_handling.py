@@ -126,6 +126,7 @@ class experiment_handling(object):
         if self.rank == 0:
             self.amMaster = True
             self.amNode = False
+            print('detected {} nodes in MPI environment'.format(self.size))
         else:
             self.amMaster = False
             self.amNode = True
