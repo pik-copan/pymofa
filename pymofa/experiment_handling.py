@@ -137,7 +137,7 @@ class experiment_handling(object):
         for s in range(self.sample_size):
             for p, kwp in zip(self.parameter_combinations,
                               self.kwparameter_combinations):
-                filename = self.path_raw + self._get_ID(p, s)
+                filename = self.path_raw + self._get_id(p, s)
                 if not os.path.exists(filename):
                     if self.use_kwargs:
                         self.tasks.append((kwp, filename))
@@ -286,19 +286,23 @@ class experiment_handling(object):
 
         # if eva returns a data frame,
         # add the indices and column names to the list of effective parameters.
-        eva_return = [eva[evakey](
-            np.sort(glob.glob(self.path_raw +
-                              self._get_ID(self.parameter_combinations[0]))))
-                      for evakey in list(eva.keys())]
+
+        # Therefore, first get the filenames for the first parameter combination
+        filenames_p0 = np.sort(glob.glob(self.path_raw + self._get_id(self.parameter_combinations[0])))
+
+        # and get the eva returns for the first callable for these filenames
+        eva_return = self._evaluate_eva(eva,
+                                        list(eva.keys())[0],
+                                        filenames_p0)
 
         # if the eva returns a dataframe, add names to eff_params
-        if isinstance(eva_return[0], pd.core.frame.DataFrame) and \
-                not isinstance(eva_return[0].index, pd.core.index.MultiIndex):
+        if isinstance(eva_return, pd.core.frame.DataFrame) and \
+                not isinstance(eva_return.index, pd.core.index.MultiIndex):
 
             index_names += ['timesteps', 'observables']
 
-            eff_params['timesteps'] = eva_return[0].index.values
-            eff_params['observables'] = eva_return[0].columns.values
+            eff_params['timesteps'] = eva_return.index.values
+            eff_params['observables'] = eva_return.columns.values
 
             process_df = True
 
@@ -333,20 +337,16 @@ class experiment_handling(object):
             if self.n_nodes < 1:
                 print("Only one node available. No parallel execution.")
                 for task_index in range(n_tasks):
-                    p_index, k_index = divmod(task_index,
-                                              len(list(eva.keys())))
-                    p, key = (self.parameter_combinations[p_index],
-                              list(eva.keys())[k_index])
-                    fnames = np.sort(glob.glob(self.path_raw
-                                               + self._get_ID(p)))
+                    p_index, k_index = divmod(task_index, len(list(eva.keys())))
+                    p, key = (self.parameter_combinations[p_index], list(eva.keys())[k_index])
+                    fnames = np.sort(glob.glob(self.path_raw + self._get_id(p)))
 
-                    eva_return = \
-                        self._process_eva_output(eva=eva,
-                                                 index_names=index_names,
-                                                 key=key,
-                                                 p=p,
-                                                 fnames=fnames,
-                                                 process_df=process_df)
+                    eva_return = self._process_eva_output(eva=eva,
+                                                          index_names=index_names,
+                                                          key=key,
+                                                          p=p,
+                                                          fnames=fnames,
+                                                          process_df=process_df)
 
                     df = df.append(other=eva_return, verify_integrity=True)
 
@@ -354,7 +354,8 @@ class experiment_handling(object):
 
             while closed_nodes < self.n_nodes:
                 # master keeps subordinate nodes buzzy:
-                data = self.comm.recv(source=MPI.ANY_SOURCE, tag=MPI.ANY_TAG,
+                data = self.comm.recv(source=MPI.ANY_SOURCE,
+                                      tag=MPI.ANY_TAG,
                                       status=self.status)
                 source = self.status.Get_source()
                 tag = self.status.Get_tag()
@@ -362,10 +363,8 @@ class experiment_handling(object):
                     # node ready to work.
                     if task_index < n_tasks:
                         # if there is work, distribute it
-                        p_index, k_index = divmod(task_index,
-                                                  len(list(eva.keys())))
-                        task = (self.parameter_combinations[p_index],
-                                list(eva.keys())[k_index])
+                        p_index, k_index = divmod(task_index, len(list(eva.keys())))
+                        task = (self.parameter_combinations[p_index], list(eva.keys())[k_index])
                         self.comm.send(task, dest=source, tag=tags.START)
                         task_index += 1
                     else:
@@ -390,25 +389,24 @@ class experiment_handling(object):
             # Nodes work as follows:
             while True:
                 self.comm.send(None, dest=self.master, tag=tags.READY)
-                task = self.comm.recv(source=self.master, tag=MPI.ANY_TAG,
-                                      status=self.status)
+                task = self.comm.recv(source=self.master, tag=MPI.ANY_TAG, status=self.status)
                 tag = self.status.Get_tag()
                 if tag == tags.START:
                     # go work:
                     (p, key) = task
                     mx = tuple(p[k] for k in list(self.index.keys()))
                     fnames = np.sort(glob.glob(self.path_raw
-                                               + self._get_ID(p)))
+                                               + self._get_id(p)))
 
-                    eva_return = \
-                        self._process_eva_output(eva=eva,
-                                                 index_names=index_names,
-                                                 key=key,
-                                                 p=p,
-                                                 fnames=fnames,
-                                                 process_df=process_df)
+                    eva_return = self._process_eva_output(eva=eva,
+                                                          index_names=index_names,
+                                                          key=key,
+                                                          p=p,
+                                                          fnames=fnames,
+                                                          process_df=process_df)
 
-                    self.comm.send((mx, key, eva_return), dest=self.master,
+                    self.comm.send((mx, key, eva_return),
+                                   dest=self.master,
                                    tag=tags.DONE)
                 elif tag == tags.EXIT:
                     break
@@ -416,6 +414,39 @@ class experiment_handling(object):
             self.comm.send(None, dest=self.master, tag=tags.EXIT)
 
         self.comm.Barrier()
+
+    @staticmethod
+    def _evaluate_eva(eva, key, fnames):
+        """
+        evaluate eva for given key and filenames and do
+        proper error logging to enable debugging
+        
+        Parameters
+        ----------
+        eva: dict
+            dictionary of callables,
+        key: key in eva dictionary
+            key for the callable in the eva dictionary, that is
+            to be evaluated,
+        fnames: list of strings
+            names of files to evaluate callable in eva
+            dictionary on.
+
+        Returns
+        -------
+        eva_return: the return value of the evaluated callable
+
+        """
+
+        try:
+            eva_return = eva[key](fnames)
+        except ValueError:
+            print('value error in eva evaluation of {} \n'.format(key))
+            print('with the following files:')
+            print(fnames)
+            eva_return = None
+
+        return eva_return
 
     def _process_eva_output(self, eva, index_names,
                             p, key, fnames, process_df):
@@ -444,7 +475,8 @@ class experiment_handling(object):
         eva_return: pandas Dataframe
 
         """
-        eva_return = eva[key](fnames)
+        eva_return = self._evaluate_eva(eva, key, fnames)
+
         if process_df:
             # create data frame with additional levels in index
             eva_return = eva_return.stack(level=0)
@@ -463,18 +495,16 @@ class experiment_handling(object):
             # 4) and fill it all into the multi index
             m_index = pd.MultiIndex(levels=index_levels,
                                     labels=index_labels,
-                                    names=['key'] + index_names)
+                                    names=['key'] + list(index_names))
             # then create the data frame
             return pd.DataFrame(index=m_index,
                                 data=eva_return.values)
         elif not process_df:
             # same as above but without levels and labels from eva return
             label_length = 1
-            index_labels = [[0] * label_length] \
-                * (len(self.index.keys()) + 1)
-            index_levels = [[key]] + [[list(p)[l]]
-                                      for l in self.index.keys()]
-            tmp_index_names = ['key'] + index_names
+            index_labels = [[0] * label_length] * (len(self.index.keys()) + 1)
+            index_levels = [[key]] + [[list(p)[l]] for l in self.index.keys()]
+            tmp_index_names = ['key'] + list(index_names)
             m_index = pd.MultiIndex(levels=index_levels,
                                     labels=index_labels,
                                     names=tmp_index_names)
@@ -482,7 +512,7 @@ class experiment_handling(object):
                                 data=[eva_return])
 
     @staticmethod
-    def _get_ID(parameter_combination, i=None):
+    def _get_id(parameter_combination, i=None):
         """
         Get a unique ID for a `parameter_combination` and ensemble index `i`.
 
