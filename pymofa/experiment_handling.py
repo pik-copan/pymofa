@@ -42,7 +42,7 @@ def enum(*sequential, **named):
     Example
     -------
     >>> Numbers = enum(ONE=1, TWO=2, THREE='three')
->>> Numbers.ONE
+    >>> Numbers.ONE
     1
     >>> Numbers.TWO
     2
@@ -77,8 +77,8 @@ class experiment_handling(object):
         also sets up the MPI environment to keep track of
         master and subordinate nodes.
 
-        Parameters:
-        -----------
+        Parameters
+        ----------
         sample_size : int
             number of runs for each parameter combination e.g.
             size of the ensemble for statistical evaluation
@@ -96,6 +96,7 @@ class experiment_handling(object):
             absolute path to the raw data of the computations
         path_res : string
             absolute path to the post processed data
+
         """
         self.sample_size = sample_size
 
@@ -107,6 +108,7 @@ class experiment_handling(object):
         self.parameter_combinations = parameter_combinations
         self.use_kwargs = use_kwargs
         self.index = index
+        self.index_names = [self.index[key] for key in range(len(self.index))]
 
         # add "/" to paths if missing
         self.path_raw = path_raw + "/" if not path_raw.endswith("/") else \
@@ -165,6 +167,7 @@ class experiment_handling(object):
         skipbadruns : bool (Default: False)
             If you don't want this function to check for bad runs that shall be
             recalculated, than set to "True". Possible reason: speed.
+
         """
         assert (callable(run_func)), "run_func must be callable"
         assert (isinstance(skipbadruns, bool)), "scipbadruns must be boolean"
@@ -217,8 +220,7 @@ class experiment_handling(object):
                     # node succeeded
                     tasks_completed += 1
                     self._progress_report(tasks_completed, len(self.tasks),
-                                          "Calculating {} ..."
-                                          .format(source))
+                                          "Calculating...")
                 elif tag == tags.EXIT:
                     # node completed all tasks. close
                     closed_nodes += 1
@@ -268,22 +270,22 @@ class experiment_handling(object):
             The function must receive a list of filenames
         name : string
             The name of the saved macro quantity pickle file
-        """
-        # Prepare list of effective parameter combinations for MultiIndex
 
+        """
+
+        # ALL NODES NEED TO KNOW WHETHER EVA RETURNS A DATAFRAME.
+
+        # First, prepare list of effective parameter combinations for MultiIndex
         if self.use_kwargs:
             eff_params = {self.index[k]:
-                          np.unique([p[self.index[k]]
-                                     for p in self.kwparameter_combinations])
+                              np.unique([p[self.index[k]]
+                                         for p in self.kwparameter_combinations])
                           for k in self.index.keys()}
         else:
             eff_params = {self.index[k]:
-                          np.unique([p[k]
-                                     for p in self.parameter_combinations])
+                              np.unique([p[k]
+                                         for p in self.parameter_combinations])
                           for k in self.index.keys()}
-
-        index_names = [self.index[key] for key in range(len(self.index))]
-        print(index_names)
 
         # if eva returns a data frame,
         # add the indices and column names to the list of effective parameters.
@@ -300,31 +302,28 @@ class experiment_handling(object):
         if isinstance(eva_return, pd.core.frame.DataFrame) and \
                 not isinstance(eva_return.index, pd.core.index.MultiIndex):
 
-            index_names += ['timesteps', 'observables']
-
             eff_params['timesteps'] = eva_return.index.values
             eff_params['observables'] = eva_return.columns.values
 
             process_df = True
 
-        # else, do nothing
+        # else, do nothing, but note, that return is NOT a dataframe
         else:
             process_df = False
 
-        n_index_levels = len(index_names)
-
         if self.amMaster:
             print('processing: ', name)
-            print('under operators ', list(eva.keys()))
 
             # create save_path if it is not yet existing
             if not os.path.exists(self.path_res):
                 os.makedirs(self.path_res)
 
             # Create empty MultiIndex and Dataframe
+
+            n_index_levels = len(self.index_names)
             m_index = pd.MultiIndex(levels=[[]]*n_index_levels,
                                     labels=[[]]*n_index_levels,
-                                    names=index_names)
+                                    names=self.index_names)
 
             df = pd.DataFrame(index=m_index)
 
@@ -343,7 +342,6 @@ class experiment_handling(object):
                     fnames = np.sort(glob.glob(self.path_raw + self._get_id(p)))
 
                     eva_return = self._process_eva_output(eva=eva,
-                                                          index_names=index_names,
                                                           key=key,
                                                           p=p,
                                                           fnames=fnames,
@@ -376,15 +374,14 @@ class experiment_handling(object):
                     df = df.append(eva_return)
                     tasks_completed += 1
                     self._progress_report(tasks_completed, n_tasks,
-                                          "Post-processing {} ..."
-                                          .format(source))
+                                          "Post-processing...")
                 elif tag == tags.EXIT:
                     closed_nodes += 1
 
             df = df.unstack(level='key')
             df.columns = df.columns.droplevel()
             df.to_pickle(self.path_res + name)
-            print('Post-processing done')
+            print('\nDone')
 
         if self.amNode:
             # Nodes work as follows:
@@ -400,7 +397,6 @@ class experiment_handling(object):
                                                + self._get_id(p)))
 
                     eva_return = self._process_eva_output(eva=eva,
-                                                          index_names=index_names,
                                                           key=key,
                                                           p=p,
                                                           fnames=fnames,
@@ -418,10 +414,10 @@ class experiment_handling(object):
 
     @staticmethod
     def _evaluate_eva(eva, key, fnames):
-        """
-        evaluate eva for given key and filenames and do
-        proper error logging to enable debugging
-        
+        """Evaluate eva for given key and filenames.
+
+        Also and do proper error logging to enable debugging.
+
         Parameters
         ----------
         eva: dict
@@ -438,7 +434,6 @@ class experiment_handling(object):
         eva_return: the return value of the evaluated callable
 
         """
-
         try:
             eva_return = eva[key](fnames)
         except ValueError:
@@ -449,19 +444,16 @@ class experiment_handling(object):
 
         return eva_return
 
-    def _process_eva_output(self, eva, index_names,
+    def _process_eva_output(self, eva,
                             p, key, fnames, process_df):
-        """
-        processes the output of the callable eva[key] to yield a
-        pandas data frame that can be appended to the final data structure.
+        """Process the output of the callable eva[key].
+
+        Yield a pandas data frame that can be appended to the final data structure.
 
         Parameters
         ----------
         eva: dict as {<name of macro-quantities> : function how to compute it}
              The function must receive a list of file names,
-        index_names: list
-            list of variable names to include in the resulting
-            data frames index,
         p: tuple
             values for variables that are to include in the
             resulting data frames index,
@@ -479,6 +471,7 @@ class experiment_handling(object):
         eva_return = self._evaluate_eva(eva, key, fnames)
 
         if process_df:
+            index_names = self.index_names + ["timesteps", "observables"]
             # create data frame with additional levels in index
             eva_return = eva_return.stack(level=0)
             # therefore, first create the multi index.
@@ -501,6 +494,7 @@ class experiment_handling(object):
             return pd.DataFrame(index=m_index,
                                 data=eva_return.values)
         elif not process_df:
+            index_names = self.index_names
             # same as above but without levels and labels from eva return
             label_length = 1
             index_labels = [[0] * label_length] * (len(self.index.keys()) + 1)
@@ -533,6 +527,7 @@ class experiment_handling(object):
         -------
         ID : string
             unique ID or pattern plus the ".pkl" ending
+
         """
         res = str(parameter_combination)  # convert to sting
         res = res[1:-1]  # delete brackets
@@ -553,8 +548,7 @@ class experiment_handling(object):
 
     @staticmethod
     def _progress_report(i, loop_length, msg=""):
-        """
-        A small progress report for a loop of defined length.
+        """Print a small progress report for a loop of defined length.
 
         Parameters
         ----------
@@ -564,6 +558,7 @@ class experiment_handling(object):
             the length of the loop
         msg : string
             (optional) a preceding string
+
         """
         sys.stdout.write("\r")
         sys.stdout.flush()
@@ -576,8 +571,7 @@ class experiment_handling(object):
 
 
 def even_time_series_spacing(dfi, n, t0=None, t_n=None):
-    """
-    Interpolate irregularly spaced time series.
+    """Interpolate irregularly spaced time series.
 
     To obtain regularly spaced data.
 
@@ -605,6 +599,7 @@ def even_time_series_spacing(dfi, n, t0=None, t_n=None):
         time steps starting at t0 and ending at t_n
         inclusively. Output data is interpolated from
         the input data.
+
     """
     if t0 is None:
         t0 = dfi.index.values[0]
@@ -649,6 +644,6 @@ def even_time_series_spacing(dfi, n, t0=None, t_n=None):
 
 if __name__ == '__main__':
     eh = experiment_handling(sample_size=10,
-                             parameter_combinations=(1, 2),
+                             parameter_combinations=[1, 2],
                              index={'phi': 1},
                              path_raw='./')
