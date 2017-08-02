@@ -272,19 +272,16 @@ class experiment_handling(object):
             The name of the saved macro quantity pickle file
 
         """
-
         # ALL NODES NEED TO KNOW WHETHER EVA RETURNS A DATAFRAME.
 
         # First, prepare list of effective parameter combinations for MultiIndex
         if self.use_kwargs:
             eff_params = {self.index[k]:
-                              np.unique([p[self.index[k]]
-                                         for p in self.kwparameter_combinations])
+                          np.unique([p[self.index[k]] for p in self.kwparameter_combinations])
                           for k in self.index.keys()}
         else:
             eff_params = {self.index[k]:
-                              np.unique([p[k]
-                                         for p in self.parameter_combinations])
+                          np.unique([p[k] for p in self.parameter_combinations])
                           for k in self.index.keys()}
 
         # if eva returns a data frame,
@@ -296,7 +293,8 @@ class experiment_handling(object):
         # and get the eva returns for the first callable for these filenames
         eva_return = self._evaluate_eva(eva,
                                         list(eva.keys())[0],
-                                        filenames_p0)
+                                        filenames_p0,
+                                        'building index')
 
         # if the eva returns a dataframe, add names to eff_params
         if isinstance(eva_return, pd.core.frame.DataFrame) and \
@@ -413,7 +411,7 @@ class experiment_handling(object):
         self.comm.Barrier()
 
     @staticmethod
-    def _evaluate_eva(eva, key, fnames):
+    def _evaluate_eva(eva, key, fnames, msg=None):
         """Evaluate eva for given key and filenames.
 
         Also and do proper error logging to enable debugging.
@@ -428,6 +426,9 @@ class experiment_handling(object):
         fnames: list of strings
             names of files to evaluate callable in eva
             dictionary on.
+        msg: basestring
+            some message to print to track where the 
+            method has been called.
 
         Returns
         -------
@@ -437,7 +438,7 @@ class experiment_handling(object):
         try:
             eva_return = eva[key](fnames)
         except ValueError:
-            print('value error in eva evaluation of {} \n'.format(key))
+            print('value error in eva evaluation of {} at {}\n'.format(key, msg))
             print('with the following files:')
             print(fnames)
             eva_return = None
@@ -468,7 +469,7 @@ class experiment_handling(object):
         eva_return: pandas Dataframe
 
         """
-        eva_return = self._evaluate_eva(eva, key, fnames)
+        eva_return = self._evaluate_eva(eva, key, fnames, 'processing data  ')
 
         if process_df:
             index_names = self.index_names + ["timesteps", "observables"]
