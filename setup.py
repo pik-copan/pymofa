@@ -1,4 +1,4 @@
-"""This is setup.py of pymofa"""
+"""Setup.py of pymofa."""
 
 from setuptools import setup
 

@@ -44,6 +44,7 @@ def explore_Parameterspace(TwoDFrame, title="",
     >>> data = init_data.get_Data("phi")
     >>> explore_Parameterspace(data.unstack(level="deltaT")["<safe>",0.5].
     >>>                        unstack(level="phi"))
+
     """
     xparams = TwoDFrame.columns.values
     yparams = TwoDFrame.index.values
@@ -93,6 +94,7 @@ def _create_meshgrid(x, y):
          array([[  9.,   9.,   9.],
                 [ 11.,  11.,  11.],
                 [ 13.,  13.,  13.]])]
+
     """
     x = np.array(x)
     y = np.array(y)

@@ -42,7 +42,7 @@ def enum(*sequential, **named):
     Example
     -------
     >>> Numbers = enum(ONE=1, TWO=2, THREE='three')
->>> Numbers.ONE
+    >>> Numbers.ONE
     1
     >>> Numbers.TWO
     2
@@ -77,8 +77,8 @@ class experiment_handling(object):
         also sets up the MPI environment to keep track of
         master and subordinate nodes.
 
-        Parameters:
-        -----------
+        Parameters
+        ----------
         sample_size : int
             number of runs for each parameter combination e.g.
             size of the ensemble for statistical evaluation
@@ -96,6 +96,7 @@ class experiment_handling(object):
             absolute path to the raw data of the computations
         path_res : string
             absolute path to the post processed data
+
         """
         self.sample_size = sample_size
 
@@ -107,6 +108,7 @@ class experiment_handling(object):
         self.parameter_combinations = parameter_combinations
         self.use_kwargs = use_kwargs
         self.index = index
+        self.index_names = [self.index[key] for key in range(len(self.index))]
 
         # add "/" to paths if missing
         self.path_raw = path_raw + "/" if not path_raw.endswith("/") else \
@@ -141,7 +143,7 @@ class experiment_handling(object):
         for s in range(self.sample_size):
             for p, kwp in zip(self.parameter_combinations,
                               self.kwparameter_combinations):
-                filename = self.path_raw + self._get_ID(p, s)
+                filename = self.path_raw + self._get_id(p, s)
                 if not os.path.exists(filename):
                     if self.use_kwargs:
                         self.tasks.append((kwp, filename))
@@ -168,6 +170,7 @@ class experiment_handling(object):
         skipbadruns : bool (Default: False)
             If you don't want this function to check for bad runs that shall be
             recalculated, than set to "True". Possible reason: speed.
+
         """
         assert (callable(run_func)), "run_func must be callable"
         assert (isinstance(skipbadruns, bool)), "scipbadruns must be boolean"
@@ -220,8 +223,7 @@ class experiment_handling(object):
                     # node succeeded
                     tasks_completed += 1
                     self._progress_report(tasks_completed, len(self.tasks),
-                                          "Calculating {} ..."
-                                          .format(source))
+                                          "Calculating...")
                 elif tag == tags.EXIT:
                     # node completed all tasks. close
                     closed_nodes += 1
@@ -271,59 +273,58 @@ class experiment_handling(object):
             The function must receive a list of filenames
         name : string
             The name of the saved macro quantity pickle file
-        """
-        # Prepare list of effective parameter combinations for MultiIndex
 
+        """
+        # ALL NODES NEED TO KNOW WHETHER EVA RETURNS A DATAFRAME.
+
+        # First, prepare list of effective parameter combinations for MultiIndex
         if self.use_kwargs:
             eff_params = {self.index[k]:
-                          np.unique([p[self.index[k]]
-                                     for p in self.kwparameter_combinations])
+                          np.unique([p[self.index[k]] for p in self.kwparameter_combinations])
                           for k in self.index.keys()}
         else:
             eff_params = {self.index[k]:
-                          np.unique([p[k]
-                                     for p in self.parameter_combinations])
+                          np.unique([p[k] for p in self.parameter_combinations])
                           for k in self.index.keys()}
-
-        index_names = [self.index[key] for key in range(len(self.index))]
-        print(index_names)
 
         # if eva returns a data frame,
         # add the indices and column names to the list of effective parameters.
-        eva_return = [eva[evakey](
-            np.sort(glob.glob(self.path_raw +
-                              self._get_ID(self.parameter_combinations[0]))))
-                      for evakey in list(eva.keys())]
+
+        # Therefore, first get the filenames for the first parameter combination
+        filenames_p0 = np.sort(glob.glob(self.path_raw + self._get_id(self.parameter_combinations[0])))
+
+        # and get the eva returns for the first callable for these filenames
+        eva_return = self._evaluate_eva(eva,
+                                        list(eva.keys())[0],
+                                        filenames_p0,
+                                        'building index')
 
         # if the eva returns a dataframe, add names to eff_params
-        if isinstance(eva_return[0], pd.core.frame.DataFrame) and \
-                not isinstance(eva_return[0].index, pd.core.index.MultiIndex):
+        if isinstance(eva_return, pd.core.frame.DataFrame) and \
+                not isinstance(eva_return.index, pd.core.index.MultiIndex):
 
-            index_names += ['timesteps', 'observables']
-
-            eff_params['timesteps'] = eva_return[0].index.values
-            eff_params['observables'] = eva_return[0].columns.values
+            eff_params['timesteps'] = eva_return.index.values
+            eff_params['observables'] = eva_return.columns.values
 
             process_df = True
 
-        # else, do nothing
+        # else, do nothing, but note, that return is NOT a dataframe
         else:
             process_df = False
 
-        n_index_levels = len(index_names)
-
         if self.amMaster:
             print('processing: ', name)
-            print('under operators ', list(eva.keys()))
 
             # create save_path if it is not yet existing
             if not os.path.exists(self.path_res):
                 os.makedirs(self.path_res)
 
             # Create empty MultiIndex and Dataframe
+
+            n_index_levels = len(self.index_names)
             m_index = pd.MultiIndex(levels=[[]]*n_index_levels,
                                     labels=[[]]*n_index_levels,
-                                    names=index_names)
+                                    names=self.index_names)
 
             df = pd.DataFrame(index=m_index)
 
@@ -337,20 +338,15 @@ class experiment_handling(object):
             if self.n_nodes < 1:
                 print("Only one node available. No parallel execution.")
                 for task_index in range(n_tasks):
-                    p_index, k_index = divmod(task_index,
-                                              len(list(eva.keys())))
-                    p, key = (self.parameter_combinations[p_index],
-                              list(eva.keys())[k_index])
-                    fnames = np.sort(glob.glob(self.path_raw
-                                               + self._get_ID(p)))
+                    p_index, k_index = divmod(task_index, len(list(eva.keys())))
+                    p, key = (self.parameter_combinations[p_index], list(eva.keys())[k_index])
+                    fnames = np.sort(glob.glob(self.path_raw + self._get_id(p)))
 
-                    eva_return = \
-                        self._process_eva_output(eva=eva,
-                                                 index_names=index_names,
-                                                 key=key,
-                                                 p=p,
-                                                 fnames=fnames,
-                                                 process_df=process_df)
+                    eva_return = self._process_eva_output(eva=eva,
+                                                          key=key,
+                                                          p=p,
+                                                          fnames=fnames,
+                                                          process_df=process_df)
 
                     df = df.append(other=eva_return, verify_integrity=True)
 
@@ -358,7 +354,8 @@ class experiment_handling(object):
 
             while closed_nodes < self.n_nodes:
                 # master keeps subordinate nodes buzzy:
-                data = self.comm.recv(source=MPI.ANY_SOURCE, tag=MPI.ANY_TAG,
+                data = self.comm.recv(source=MPI.ANY_SOURCE,
+                                      tag=MPI.ANY_TAG,
                                       status=self.status)
                 source = self.status.Get_source()
                 tag = self.status.Get_tag()
@@ -366,10 +363,8 @@ class experiment_handling(object):
                     # node ready to work.
                     if task_index < n_tasks:
                         # if there is work, distribute it
-                        p_index, k_index = divmod(task_index,
-                                                  len(list(eva.keys())))
-                        task = (self.parameter_combinations[p_index],
-                                list(eva.keys())[k_index])
+                        p_index, k_index = divmod(task_index, len(list(eva.keys())))
+                        task = (self.parameter_combinations[p_index], list(eva.keys())[k_index])
                         self.comm.send(task, dest=source, tag=tags.START)
                         task_index += 1
                     else:
@@ -380,39 +375,36 @@ class experiment_handling(object):
                     df = df.append(eva_return)
                     tasks_completed += 1
                     self._progress_report(tasks_completed, n_tasks,
-                                          "Post-processing {} ..."
-                                          .format(source))
+                                          "Post-processing...")
                 elif tag == tags.EXIT:
                     closed_nodes += 1
 
             df = df.unstack(level='key')
             df.columns = df.columns.droplevel()
             df.to_pickle(self.path_res + name)
-            print('Post-processing done')
+            print('\nDone')
 
         if self.amNode:
             # Nodes work as follows:
             while True:
                 self.comm.send(None, dest=self.master, tag=tags.READY)
-                task = self.comm.recv(source=self.master, tag=MPI.ANY_TAG,
-                                      status=self.status)
+                task = self.comm.recv(source=self.master, tag=MPI.ANY_TAG, status=self.status)
                 tag = self.status.Get_tag()
                 if tag == tags.START:
                     # go work:
                     (p, key) = task
                     mx = tuple(p[k] for k in list(self.index.keys()))
                     fnames = np.sort(glob.glob(self.path_raw
-                                               + self._get_ID(p)))
+                                               + self._get_id(p)))
 
-                    eva_return = \
-                        self._process_eva_output(eva=eva,
-                                                 index_names=index_names,
-                                                 key=key,
-                                                 p=p,
-                                                 fnames=fnames,
-                                                 process_df=process_df)
+                    eva_return = self._process_eva_output(eva=eva,
+                                                          key=key,
+                                                          p=p,
+                                                          fnames=fnames,
+                                                          process_df=process_df)
 
-                    self.comm.send((mx, key, eva_return), dest=self.master,
+                    self.comm.send((mx, key, eva_return),
+                                   dest=self.master,
                                    tag=tags.DONE)
                 elif tag == tags.EXIT:
                     break
@@ -421,19 +413,51 @@ class experiment_handling(object):
 
         self.comm.Barrier()
 
-    def _process_eva_output(self, eva, index_names,
-                            p, key, fnames, process_df):
+    @staticmethod
+    def _evaluate_eva(eva, key, fnames, msg=None):
+        """Evaluate eva for given key and filenames.
+
+        Also and do proper error logging to enable debugging.
+
+        Parameters
+        ----------
+        eva: dict
+            dictionary of callables,
+        key: key in eva dictionary
+            key for the callable in the eva dictionary, that is
+            to be evaluated,
+        fnames: list of strings
+            names of files to evaluate callable in eva
+            dictionary on.
+        msg: basestring
+            some message to print to track where the
+            method has been called.
+
+        Returns
+        -------
+        eva_return: the return value of the evaluated callable
+
         """
-        processes the output of the callable eva[key] to yield a
-        pandas data frame that can be appended to the final data structure.
+        try:
+            eva_return = eva[key](fnames)
+        except ValueError:
+            print('value error in eva evaluation of {} at {}\n'.format(key, msg))
+            print('with the following files:')
+            print(fnames)
+            eva_return = None
+
+        return eva_return
+
+    def _process_eva_output(self, eva,
+                            p, key, fnames, process_df):
+        """Process the output of the callable eva[key].
+
+        Yield a pandas data frame that can be appended to the final data structure.
 
         Parameters
         ----------
         eva: dict as {<name of macro-quantities> : function how to compute it}
              The function must receive a list of file names,
-        index_names: list
-            list of variable names to include in the resulting
-            data frames index,
         p: tuple
             values for variables that are to include in the
             resulting data frames index,
@@ -448,8 +472,10 @@ class experiment_handling(object):
         eva_return: pandas Dataframe
 
         """
-        eva_return = eva[key](fnames)
+        eva_return = self._evaluate_eva(eva, key, fnames, 'processing data  ')
+
         if process_df:
+            index_names = self.index_names + ["timesteps", "observables"]
             # create data frame with additional levels in index
             eva_return = eva_return.stack(level=0)
             # therefore, first create the multi index.
@@ -467,18 +493,17 @@ class experiment_handling(object):
             # 4) and fill it all into the multi index
             m_index = pd.MultiIndex(levels=index_levels,
                                     labels=index_labels,
-                                    names=['key'] + index_names)
+                                    names=['key'] + list(index_names))
             # then create the data frame
             return pd.DataFrame(index=m_index,
                                 data=eva_return.values)
         elif not process_df:
+            index_names = self.index_names
             # same as above but without levels and labels from eva return
             label_length = 1
-            index_labels = [[0] * label_length] \
-                * (len(self.index.keys()) + 1)
-            index_levels = [[key]] + [[list(p)[l]]
-                                      for l in self.index.keys()]
-            tmp_index_names = ['key'] + index_names
+            index_labels = [[0] * label_length] * (len(self.index.keys()) + 1)
+            index_levels = [[key]] + [[list(p)[l]] for l in self.index.keys()]
+            tmp_index_names = ['key'] + list(index_names)
             m_index = pd.MultiIndex(levels=index_levels,
                                     labels=index_labels,
                                     names=tmp_index_names)
@@ -486,7 +511,7 @@ class experiment_handling(object):
                                 data=[eva_return])
 
     @staticmethod
-    def _get_ID(parameter_combination, i=None):
+    def _get_id(parameter_combination, i=None):
         """
         Get a unique ID for a `parameter_combination` and ensemble index `i`.
 
@@ -506,6 +531,7 @@ class experiment_handling(object):
         -------
         ID : string
             unique ID or pattern plus the ".pkl" ending
+
         """
         res = str(parameter_combination)  # convert to sting
         res = res[1:-1]  # delete brackets
@@ -526,8 +552,7 @@ class experiment_handling(object):
 
     @staticmethod
     def _progress_report(i, loop_length, msg=""):
-        """
-        A small progress report for a loop of defined length.
+        """Print a small progress report for a loop of defined length.
 
         Parameters
         ----------
@@ -537,6 +562,7 @@ class experiment_handling(object):
             the length of the loop
         msg : string
             (optional) a preceding string
+
         """
         sys.stdout.write("\r")
         sys.stdout.flush()
@@ -549,8 +575,7 @@ class experiment_handling(object):
 
 
 def even_time_series_spacing(dfi, n, t0=None, t_n=None):
-    """
-    Interpolate irregularly spaced time series.
+    """Interpolate irregularly spaced time series.
 
     To obtain regularly spaced data.
 
@@ -578,6 +603,7 @@ def even_time_series_spacing(dfi, n, t0=None, t_n=None):
         time steps starting at t0 and ending at t_n
         inclusively. Output data is interpolated from
         the input data.
+
     """
     if t0 is None:
         t0 = dfi.index.values[0]
@@ -622,6 +648,6 @@ def even_time_series_spacing(dfi, n, t0=None, t_n=None):
 
 if __name__ == '__main__':
     eh = experiment_handling(sample_size=10,
-                             parameter_combinations=(1, 2),
+                             parameter_combinations=[1, 2],
                              index={'phi': 1},
                              path_raw='./')
