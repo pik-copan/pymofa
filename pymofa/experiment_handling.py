@@ -427,7 +427,7 @@ class experiment_handling(object):
             names of files to evaluate callable in eva
             dictionary on.
         msg: basestring
-            some message to print to track where the 
+            some message to print to track where the
             method has been called.
 
         Returns
