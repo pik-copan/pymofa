@@ -1,3 +1,5 @@
+
+
 """
 Run a computer model for various parameter combinations and sample sizes.
 
@@ -20,15 +22,15 @@ resaving is parallelized such that parameter combinations are
 distributed amongs nodes. For small sample sizes, a serial
 implementation could be faster due to overhead...
 """
+from __future__ import print_function
+
+import glob
 import os
 import sys
-import glob
-import itertools as it
-import pickle as pkl
+
 import numpy as np
 import pandas as pd
 from scipy.interpolate import interp1d
-
 
 from mpi4py import MPI
 
@@ -40,7 +42,7 @@ def enum(*sequential, **named):
     Example
     -------
     >>> Numbers = enum(ONE=1, TWO=2, THREE='three')
-    >>> Numbers.ONE
+>>> Numbers.ONE
     1
     >>> Numbers.TWO
     2
@@ -52,8 +54,9 @@ def enum(*sequential, **named):
     "http://stackoverflow.com/questions/36932/
      how-can-i-represent-an-enum-in-python"
     """
-    enums = dict(zip(sequential, range(len(sequential))), **named)
+    enums = dict(list(zip(sequential, list(range(len(sequential))))), **named)
     return type('Enum', (), enums)
+
 
 tags = enum('START', 'READY', 'DONE', 'FAILED', 'EXIT')
 
@@ -62,7 +65,7 @@ class experiment_handling(object):
     """Class doc string."""
 
     def __init__(self, sample_size, parameter_combinations, index, path_raw,
-                 path_res='./data/'):
+                 path_res='./data/', use_kwargs=False):
         """
         Set up the experiment handling class.
 
@@ -95,27 +98,38 @@ class experiment_handling(object):
             absolute path to the post processed data
         """
         self.sample_size = sample_size
+
+        self.kwparameter_combinations = \
+            [{index[i]: params[i]
+              for i in range(min(len(params), len(index.keys())))}
+             for params in parameter_combinations]
+
         self.parameter_combinations = parameter_combinations
+        self.use_kwargs = use_kwargs
         self.index = index
 
         # add "/" to paths if missing
-        self.path_raw = path_raw + "/" if not path_raw.endswith("/") else\
+        self.path_raw = path_raw + "/" if not path_raw.endswith("/") else \
             path_raw
-        self.path_res = path_res + "/" if not path_res.endswith("/") else\
+        self.path_res = path_res + "/" if not path_res.endswith("/") else \
             path_res
 
+        # load mpi4py MPI environment and get size and ranks
         self.comm = MPI.COMM_WORLD
         self.status = MPI.Status()
         self.size = self.comm.Get_size()
         self.rank = self.comm.Get_rank()
 
+        # split size of environment in 1 master and n-1 slaves
         self.master = 0
-        self.nodes = range(1, self.size)
-        self.n_nodes = self.size-1
+        self.nodes = list(range(1, self.size))
+        self.n_nodes = self.size - 1
 
+        # tell process whether it is master or slave
         if self.rank == 0:
             self.amMaster = True
             self.amNode = False
+            print('detected {} nodes in MPI environment'.format(self.size))
         else:
             self.amMaster = False
             self.amNode = True
@@ -123,12 +137,17 @@ class experiment_handling(object):
         # create list of tasks (parameter_combs*sample_size)
         # and paths to save the results.
         self.tasks = []
+
         for s in range(self.sample_size):
-            for p in self.parameter_combinations:
+            for p, kwp in zip(self.parameter_combinations,
+                              self.kwparameter_combinations):
                 filename = self.path_raw + self._get_ID(p, s)
                 if not os.path.exists(filename):
+                    if self.use_kwargs:
+                        self.tasks.append((kwp, filename))
+                    else:
+                        self.tasks.append((p, filename))
 
-                    self.tasks.append((p, filename))
         self.filenames = []
 
     def compute(self, run_func, skipbadruns=False):
@@ -150,26 +169,33 @@ class experiment_handling(object):
             If you don't want this function to check for bad runs that shall be
             recalculated, than set to "True". Possible reason: speed.
         """
+        assert (callable(run_func)), "run_func must be callable"
+        assert (isinstance(skipbadruns, bool)), "scipbadruns must be boolean"
         if self.amMaster:
             # check, if path exists. If not, create.
             if not os.path.exists(self.path_raw):
                 os.makedirs(self.path_raw)
 
             # give brief feedback about remaining work.
-            print str(len(self.tasks)) + " of "\
-                + str(len(self.parameter_combinations)*self.sample_size)\
-                + " single computations left"
+            print(str(len(self.tasks)) + " of "
+                  + str(len(self.parameter_combinations) * self.sample_size)
+                  + " single computations left")
 
             # check if nodes are available. If not, do serial calculation.
             if self.n_nodes < 1:
-                print "Only one node available. No parallel execution."
+                print("Only one node available. No parallel execution.")
+
                 for task in self.tasks:
                     (params, filename) = task
                     result = -1
                     while result < 0:
-                        result = run_func(*params, filename=filename)
+                        if self.use_kwargs:
+                            result = run_func(filename=filename, **params)
+                        else:
+                            result = run_func(*params, filename=filename)
 
-            print "Splitting calculations to {} nodes.".format(self.n_nodes)
+            print("Splitting calculations to {} nodes.".format(self.n_nodes))
+
             task_index = 0
             tasks_completed = 0
             closed_nodes = 0
@@ -187,11 +213,11 @@ class experiment_handling(object):
                     else:
                         self.comm.send(None, dest=source, tag=tags.EXIT)
                 elif tag == tags.FAILED:
-                    # node failed to complete. retry
+                    # node failed to complete.
+                    # retry (failed runs send their task as return)
                     self.comm.send(n_return, dest=source, tag=tags.START)
                 elif tag == tags.DONE:
                     # node succeeded
-                    result = n_return
                     tasks_completed += 1
                     self._progress_report(tasks_completed, len(self.tasks),
                                           "Calculating {} ..."
@@ -199,7 +225,7 @@ class experiment_handling(object):
                 elif tag == tags.EXIT:
                     # node completed all tasks. close
                     closed_nodes += 1
-            print "Calculating 0 ...done."
+            print("Calculating 0 ...done.")
 
         if self.amNode:
             # Nodes work as follows:
@@ -213,7 +239,10 @@ class experiment_handling(object):
                 if tag == tags.START:
                     # go work:
                     (params, filename) = task
-                    result = run_func(*params, filename=filename)
+                    if self.use_kwargs:
+                        result = run_func(filename=filename, **params)
+                    else:
+                        result = run_func(*params, filename=filename)
                     if result >= 0:
                         self.comm.send(result, dest=self.master, tag=tags.DONE)
                     else:
@@ -225,7 +254,7 @@ class experiment_handling(object):
 
         self.comm.Barrier()
 
-    def resave(self, eva, name, sortlevel=0):
+    def resave(self, eva, name):
         """
         Postprocess the computed raw data.
 
@@ -242,83 +271,88 @@ class experiment_handling(object):
             The function must receive a list of filenames
         name : string
             The name of the saved macro quantity pickle file
-        sortlevel: int
-            level on which the eva_return output is sorted (in case of
-            dataframes) default is 0, but if the output is messed up,
-            changing to 1 usually helps. Who the fuck knows why..
         """
         # Prepare list of effective parameter combinations for MultiIndex
-        eff_params = {self.index[k]: np.unique([p[k] for p in
-                                                self.parameter_combinations])
-                      for k in self.index.keys()}
+
+        if self.use_kwargs:
+            eff_params = {self.index[k]:
+                          np.unique([p[self.index[k]]
+                                     for p in self.kwparameter_combinations])
+                          for k in self.index.keys()}
+        else:
+            eff_params = {self.index[k]:
+                          np.unique([p[k]
+                                     for p in self.parameter_combinations])
+                          for k in self.index.keys()}
+
+        index_names = [self.index[key] for key in range(len(self.index))]
+        print(index_names)
 
         # if eva returns a data frame,
         # add the indices and column names to the list of effective parameters.
-        eva_return = [eva[evakey](np.sort(glob.glob(self.path_raw +
-                      self._get_ID(self.parameter_combinations[0]))))
-                      for evakey in eva.keys()]
+        eva_return = [eva[evakey](
+            np.sort(glob.glob(self.path_raw +
+                              self._get_ID(self.parameter_combinations[0]))))
+                      for evakey in list(eva.keys())]
 
-        if isinstance(eva_return[0], pd.core.frame.DataFrame) and\
+        # if the eva returns a dataframe, add names to eff_params
+        if isinstance(eva_return[0], pd.core.frame.DataFrame) and \
                 not isinstance(eva_return[0].index, pd.core.index.MultiIndex):
+
+            index_names += ['timesteps', 'observables']
+
             eff_params['timesteps'] = eva_return[0].index.values
             eff_params['observables'] = eva_return[0].columns.values
-            index_order = list(it.chain.from_iterable([self.index.values(),
-                               ["timesteps", "observables"]]))
-            input_is_dataframe = True
+
+            process_df = True
+
+        # else, do nothing
         else:
-            index_order = list(it.chain.from_iterable([self.index.values()]))
-            input_is_dataframe = False
+            process_df = False
+
+        n_index_levels = len(index_names)
 
         if self.amMaster:
-            print 'processing ', name
-            print 'under operators ', eva.keys()
+            print('processing: ', name)
+            print('under operators ', list(eva.keys()))
+
             # create save_path if it is not yet existing
             if not os.path.exists(self.path_res):
                 os.makedirs(self.path_res)
 
-            # Create MultiIndex and Dataframe
-            mIndex = pd.MultiIndex.from_product(eff_params.values(),
-                                                names=eff_params.keys())
+            # Create empty MultiIndex and Dataframe
+            m_index = pd.MultiIndex(levels=[[]]*n_index_levels,
+                                    labels=[[]]*n_index_levels,
+                                    names=index_names)
 
-            mIndex = mIndex.reorder_levels(index_order)
+            df = pd.DataFrame(index=m_index)
 
-            df = pd.DataFrame(index=mIndex)
-
+            # initialize counters for work sharing amongst nodes
             task_index = 0
             tasks_completed = 0
-            n_tasks = len(self.parameter_combinations)*len(eva.keys())
+            n_tasks = len(self.parameter_combinations) * len(list(eva.keys()))
             closed_nodes = 0
 
             # Check if nodes are available. If not, do serial computation.
             if self.n_nodes < 1:
-                print "Only one node available. No parallel execution."
+                print("Only one node available. No parallel execution.")
                 for task_index in range(n_tasks):
-                    p_index, k_index = divmod(task_index, len(eva.keys()))
+                    p_index, k_index = divmod(task_index,
+                                              len(list(eva.keys())))
                     p, key = (self.parameter_combinations[p_index],
-                              eva.keys()[k_index])
-                    mx = tuple(p[k] for k in self.index.keys())
+                              list(eva.keys())[k_index])
                     fnames = np.sort(glob.glob(self.path_raw
                                                + self._get_ID(p)))
-                    eva_return = eva[key](fnames)
-                    if input_is_dataframe:
 
-                        stack = eva_return.stack(level=0, dropna=False)
+                    eva_return = \
+                        self._process_eva_output(eva=eva,
+                                                 index_names=index_names,
+                                                 key=key,
+                                                 p=p,
+                                                 fnames=fnames,
+                                                 process_df=process_df)
 
-                        stackIndex = pd.MultiIndex(levels=stack.index.levels,
-                                                   labels=stack.index.labels,
-                                                   names=[u'timesteps',
-                                                          u'observables'])
-                        eva_return = pd.DataFrame(stack,
-                                                  index=stackIndex)\
-                            .sortlevel(level=sortlevel).values
-                    # common error here: eva_return and df are sorted on
-                    # different levels. Also, sometimes, the eva_results
-                    # have to be passed as values to the locator, other times,
-                    # this does not work. I don't know why.
-                    df.loc[mx, key] = eva_return
-
-                df.to_pickle(self.path_res + name)
-                print 'saving to ', self.path_res + name
+                    df = df.append(other=eva_return, verify_integrity=True)
 
             # If nodes are available, distribute work amongst nodes.
 
@@ -332,9 +366,10 @@ class experiment_handling(object):
                     # node ready to work.
                     if task_index < n_tasks:
                         # if there is work, distribute it
-                        p_index, k_index = divmod(task_index, len(eva.keys()))
+                        p_index, k_index = divmod(task_index,
+                                                  len(list(eva.keys())))
                         task = (self.parameter_combinations[p_index],
-                                eva.keys()[k_index])
+                                list(eva.keys())[k_index])
                         self.comm.send(task, dest=source, tag=tags.START)
                         task_index += 1
                     else:
@@ -342,7 +377,7 @@ class experiment_handling(object):
                         self.comm.send(None, dest=source, tag=tags.EXIT)
                 elif tag == tags.DONE:
                     (mx, key, eva_return) = data
-                    df.loc[mx, key] = eva_return
+                    df = df.append(eva_return)
                     tasks_completed += 1
                     self._progress_report(tasks_completed, n_tasks,
                                           "Post-processing {} ..."
@@ -350,12 +385,13 @@ class experiment_handling(object):
                 elif tag == tags.EXIT:
                     closed_nodes += 1
 
+            df = df.unstack(level='key')
+            df.columns = df.columns.droplevel()
             df.to_pickle(self.path_res + name)
-            print 'Post-processing done'
+            print('Post-processing done')
 
         if self.amNode:
             # Nodes work as follows:
-            name = MPI.Get_processor_name()
             while True:
                 self.comm.send(None, dest=self.master, tag=tags.READY)
                 task = self.comm.recv(source=self.master, tag=MPI.ANY_TAG,
@@ -364,18 +400,17 @@ class experiment_handling(object):
                 if tag == tags.START:
                     # go work:
                     (p, key) = task
-                    mx = tuple(p[k] for k in self.index.keys())
-                    fnames = np.sort(glob.glob(self.path_raw+self._get_ID(p)))
-                    eva_return = eva[key](fnames)
-                    if input_is_dataframe:
-                        stack = pd.DataFrame(eva_return.stack(dropna=False))
-                        stackIndex = pd.MultiIndex(levels=stack.index.levels,
-                                                   labels=stack.index.labels,
-                                                   names=[u'timesteps',
-                                                          u'observables'])
-                        eva_return = pd.DataFrame(stack,
-                                                  index=stackIndex)\
-                            .sortlevel(level=0).values
+                    mx = tuple(p[k] for k in list(self.index.keys()))
+                    fnames = np.sort(glob.glob(self.path_raw
+                                               + self._get_ID(p)))
+
+                    eva_return = \
+                        self._process_eva_output(eva=eva,
+                                                 index_names=index_names,
+                                                 key=key,
+                                                 p=p,
+                                                 fnames=fnames,
+                                                 process_df=process_df)
 
                     self.comm.send((mx, key, eva_return), dest=self.master,
                                    tag=tags.DONE)
@@ -386,58 +421,69 @@ class experiment_handling(object):
 
         self.comm.Barrier()
 
-    def collect(self, eva, name):
+    def _process_eva_output(self, eva, index_names,
+                            p, key, fnames, process_df):
         """
-        Collect data from ensemble.
-
-        Can be used to collect data from all runs without any statistic
-        measurement.
-        Creates a dictionary with parameter combinations as keys and
-        Dataframes with data from all runs as content
+        processes the output of the callable eva[key] to yield a
+        pandas data frame that can be appended to the final data structure.
 
         Parameters
         ----------
-        eva: dict of callables
-            Have to return a dataframe with one
-            column and an integer index with length equal to the
-            sample size of the experiment.
-        name: string
-            name of the data collection / save file
+        eva: dict as {<name of macro-quantities> : function how to compute it}
+             The function must receive a list of file names,
+        index_names: list
+            list of variable names to include in the resulting
+            data frames index,
+        p: tuple
+            values for variables that are to include in the
+            resulting data frames index,
+        key: key for eva dict
+        fnames: list
+            list of file names to interpret by eva,
+        process_df: bool
+            indicator whether the return of eva is a data frame.
+
+        Returns
+        -------
+        eva_return: pandas Dataframe
+
         """
-        if self.amMaster:
-            print 'collecting ', name
-            # create save_path if it is not yet existing
-            if not os.path.exists(self.path_res):
-                os.makedirs(self.path_res)
-
-            # create dictionary:
-
-            dic = {}
-            n_tasks = len(self.parameter_combinations)
-
-            # iterate through all parameter combinations
-            for task_index in range(n_tasks):
-                # create Data frame for eva keys and sample size
-                df = pd.DataFrame(columns=eva.keys(),
-                                  index=range(self.sample_size))
-                # select parameters
-                p = self.parameter_combinations[task_index]
-                # keep variable parameters (those that are in the index dict)
-                mx = tuple(p[k] for k in self.index.keys())
-                # and compile a file list accordingly
-                fnames = np.sort(glob.glob(self.path_raw
-                                           + self._get_ID(p)))
-
-                # collect data according to eva
-                for key in eva.keys():
-                    df[key] = eva[key](fnames)
-                # and put it into the dict with descriptive parameter tuple as
-                # key
-                dic[mx] = df
-
-            with open(self.path_res + name, 'wb') as outfile:
-                pkl.dump(dic, outfile)
-            print 'saving to ', self.path_res + name
+        eva_return = eva[key](fnames)
+        if process_df:
+            # create data frame with additional levels in index
+            eva_return = eva_return.stack(level=0)
+            # therefore, first create the multi index.
+            # 1) find length of labels
+            label_length = len(eva_return.index.labels[0])
+            # 2) add new levels to labels (being zero, since new
+            # index levels have constant values
+            index_labels = [[0] * label_length] \
+                * (len(self.index.keys()) + 1) \
+                + eva_return.index.labels
+            # 3) add new index levels to the old ones
+            index_levels = [[key]] + [[list(p)[l]]
+                                      for l in self.index.keys()] \
+                + eva_return.index.levels
+            # 4) and fill it all into the multi index
+            m_index = pd.MultiIndex(levels=index_levels,
+                                    labels=index_labels,
+                                    names=['key'] + index_names)
+            # then create the data frame
+            return pd.DataFrame(index=m_index,
+                                data=eva_return.values)
+        elif not process_df:
+            # same as above but without levels and labels from eva return
+            label_length = 1
+            index_labels = [[0] * label_length] \
+                * (len(self.index.keys()) + 1)
+            index_levels = [[key]] + [[list(p)[l]]
+                                      for l in self.index.keys()]
+            tmp_index_names = ['key'] + index_names
+            m_index = pd.MultiIndex(levels=index_levels,
+                                    labels=index_labels,
+                                    names=tmp_index_names)
+            return pd.DataFrame(index=m_index,
+                                data=[eva_return])
 
     @staticmethod
     def _get_ID(parameter_combination, i=None):
@@ -492,18 +538,17 @@ class experiment_handling(object):
         msg : string
             (optional) a preceding string
         """
-        percent = str(int(np.around(float(i)/loop_length, 2) * 100))
         sys.stdout.write("\r")
         sys.stdout.flush()
-        sys.stdout.write(msg + " [" + percent + "%] ")
+        sys.stdout.write("{} {:.2%}".format(msg, float(i)/float(loop_length)))
         sys.stdout.flush()
 
-        if i == loop_length-1:
+        if i == loop_length - 1:
             sys.stdout.write("\n")
             sys.stdout.flush()
 
 
-def even_time_series_spacing(dfi, N, t0=None, tN=None):
+def even_time_series_spacing(dfi, n, t0=None, t_n=None):
     """
     Interpolate irregularly spaced time series.
 
@@ -514,14 +559,14 @@ def even_time_series_spacing(dfi, N, t0=None, tN=None):
     dfi : pandas dataframe
         dataframe with one dimensional index containing
         time stamps as index values.
-    N   : int
+    n   : int
         number of regularly spaced timestamps in the
         resulting time series.
     t0  : float
         starting time of the resulting time series -
         defaults to the first time step of the input
         time series.
-    tN  : float
+    t_n  : float
         end time of the resulting time series -
         defaults to the last time step of the input
         time series.
@@ -530,16 +575,16 @@ def even_time_series_spacing(dfi, N, t0=None, tN=None):
     -------
     dfo : pandas dataframe
         pandas dataframe with n regularly spaced
-        time steps starting at t0 and ending at tN
+        time steps starting at t0 and ending at t_n
         inclusively. Output data is interpolated from
         the input data.
     """
     if t0 is None:
         t0 = dfi.index.values[0]
-    if tN is None:
-        tN = dfi.index.values[-1]
+    if t_n is None:
+        t_n = dfi.index.values[-1]
 
-    timestamps = np.linspace(t0, tN, N)
+    timestamps = np.linspace(t0, t_n, n)
 
     observables = dfi.columns
     measurements = {}
@@ -565,8 +610,7 @@ def even_time_series_spacing(dfi, N, t0=None, tN=None):
     # fill series with Nan's from where the original time
     # series ended.
 
-    data_points = {}
-    data_points['time'] = timestamps
+    data_points = {'time': timestamps}
     for o in observables:
         x = [t if t < t_max else float('NaN') for t in timestamps]
         data_points[o] = interpolations[o](x)
@@ -574,3 +618,10 @@ def even_time_series_spacing(dfi, N, t0=None, tN=None):
     dfo = pd.DataFrame(data_points, index=timestamps)
 
     return dfo
+
+
+if __name__ == '__main__':
+    eh = experiment_handling(sample_size=10,
+                             parameter_combinations=(1, 2),
+                             index={'phi': 1},
+                             path_raw='./')
