@@ -198,6 +198,7 @@ class experiment_handling(object):
                             result = run_func(*params, filename=filename)
 
             print("Splitting calculations to {} nodes.".format(self.n_nodes))
+            sys.stdout.flush()
 
             task_index = 0
             tasks_completed = 0
@@ -290,14 +291,19 @@ class experiment_handling(object):
         # if eva returns a data frame,
         # add the indices and column names to the list of effective parameters.
 
-        # Therefore, first get the filenames for the first parameter combination
-        filenames_p0 = np.sort(glob.glob(self.path_raw + self._get_id(self.parameter_combinations[0])))
+        # Therefore, first get the filenames for the first parameter combination that has output files
+        i = 0
+        while True:
+            filenames_p0 = np.sort(glob.glob(self.path_raw + self._get_id(self.parameter_combinations[i])))
+            i += 1
+            if len(filenames_p0) > 0:
+                break
 
         # and get the eva returns for the first callable for these filenames
         eva_return = self._evaluate_eva(eva,
                                         list(eva.keys())[0],
                                         filenames_p0,
-                                        'building index')
+                                        'building index with parameters {}'.format(self.parameter_combinations[-1]))
 
         # if the eva returns a dataframe, add names to eff_params
         if isinstance(eva_return, pd.core.frame.DataFrame) and \
@@ -413,8 +419,8 @@ class experiment_handling(object):
 
         self.comm.Barrier()
 
-    @staticmethod
-    def _evaluate_eva(eva, key, fnames, msg=None):
+#    @staticmethod
+    def _evaluate_eva(self, eva, key, fnames, msg=None):
         """Evaluate eva for given key and filenames.
 
         Also and do proper error logging to enable debugging.
@@ -441,9 +447,7 @@ class experiment_handling(object):
         try:
             eva_return = eva[key](fnames)
         except ValueError:
-            print('value error in eva evaluation of {} at {}\n'.format(key, msg))
-            print('with the following files:')
-            print(fnames)
+            print('value error in eva of {} at {}\n'.format(key, msg))
             eva_return = None
 
         return eva_return
@@ -472,7 +476,10 @@ class experiment_handling(object):
         eva_return: pandas Dataframe
 
         """
-        eva_return = self._evaluate_eva(eva, key, fnames, 'processing data  ')
+        eva_return = self._evaluate_eva(eva, key, fnames, 'processing data for parameters {} with {} files'.format(p, len(fnames)))
+
+        if eva_return is None:
+            return
 
         if process_df:
             index_names = self.index_names + ["timesteps", "observables"]
