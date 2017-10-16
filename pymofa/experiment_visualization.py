@@ -16,12 +16,12 @@ Explore Parameterspace3D
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib as mpl
-mpl.use('Agg')
-mpl.style.use("ggplot")
+# mpl.use('Agg')
+# mpl.style.use("ggplot")
 
 
 def explore_Parameterspace(TwoDFrame, title="",
-                           cmap='RdBu', norm=None, vmin=None, vmax=None):
+                           cmap='viridis', norm=None, vmin=None, vmax=None):
     """
     Explore variables in a 2-dim Parameterspace.
 
@@ -48,6 +48,10 @@ def explore_Parameterspace(TwoDFrame, title="",
     """
     xparams = TwoDFrame.columns.values
     yparams = TwoDFrame.index.values
+
+    assert type(yparams[0]) != tuple, "Be aware of multi indicies"
+    assert type(xparams[0]) != tuple, "Be aware of multi indicies"
+
     values = TwoDFrame.values
 
     X, Y = _create_meshgrid(xparams, yparams)
