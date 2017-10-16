@@ -27,7 +27,7 @@ from __future__ import print_function
 import glob
 import os
 import sys
-
+import traceback
 import numpy as np
 import pandas as pd
 from scipy.interpolate import interp1d
@@ -98,11 +98,14 @@ class experiment_handling(object):
             absolute path to the post processed data
 
         """
+
+        print('initializing pymofa experiment handle')
+
         self.sample_size = sample_size
 
         self.kwparameter_combinations = \
             [{index[i]: params[i]
-              for i in range(min(len(params), len(index.keys())))}
+              for i in index.keys()}
              for params in parameter_combinations]
 
         self.parameter_combinations = parameter_combinations
@@ -198,6 +201,7 @@ class experiment_handling(object):
                             result = run_func(*params, filename=filename)
 
             print("Splitting calculations to {} nodes.".format(self.n_nodes))
+            sys.stdout.flush()
 
             task_index = 0
             tasks_completed = 0
@@ -256,7 +260,7 @@ class experiment_handling(object):
 
         self.comm.Barrier()
 
-    def resave(self, eva, name):
+    def resave(self, eva, name, no_output=False):
         """
         Postprocess the computed raw data.
 
@@ -273,6 +277,8 @@ class experiment_handling(object):
             The function must receive a list of filenames
         name : string
             The name of the saved macro quantity pickle file
+        no_output: bool
+            tell resave that eva will not yield any output.
 
         """
         # ALL NODES NEED TO KNOW WHETHER EVA RETURNS A DATAFRAME.
@@ -290,27 +296,35 @@ class experiment_handling(object):
         # if eva returns a data frame,
         # add the indices and column names to the list of effective parameters.
 
-        # Therefore, first get the filenames for the first parameter combination
-        filenames_p0 = np.sort(glob.glob(self.path_raw + self._get_id(self.parameter_combinations[0])))
-
-        # and get the eva returns for the first callable for these filenames
-        eva_return = self._evaluate_eva(eva,
-                                        list(eva.keys())[0],
-                                        filenames_p0,
-                                        'building index')
-
-        # if the eva returns a dataframe, add names to eff_params
-        if isinstance(eva_return, pd.core.frame.DataFrame) and \
-                not isinstance(eva_return.index, pd.core.index.MultiIndex):
-
-            eff_params['timesteps'] = eva_return.index.values
-            eff_params['observables'] = eva_return.columns.values
-
-            process_df = True
-
-        # else, do nothing, but note, that return is NOT a dataframe
-        else:
+        if no_output:
             process_df = False
+        else:
+            # Therefore, first get the filenames for the first parameter combination that has output files
+            i = 0
+            while True:
+                filenames_p0 = np.sort(glob.glob(self.path_raw + self._get_id(self.parameter_combinations[i])))
+                i += 1
+                if len(filenames_p0) > 0:
+                    break
+
+            # and get the eva returns for the first callable for these filenames
+            eva_return = self._evaluate_eva(eva,
+                                            list(eva.keys())[0],
+                                            filenames_p0,
+                                            'building index with parameters {}'.format(self.parameter_combinations[-1]))
+
+            # if the eva returns a dataframe, add names to eff_params
+            if isinstance(eva_return, pd.core.frame.DataFrame) and \
+                    not isinstance(eva_return.index, pd.core.index.MultiIndex):
+
+                eff_params['timesteps'] = eva_return.index.values
+                eff_params['observables'] = eva_return.columns.values
+
+                process_df = True
+
+            # else, do nothing, but note, that return is NOT a dataframe
+            else:
+                process_df = False
 
         if self.amMaster:
             print('processing: ', name)
@@ -347,8 +361,8 @@ class experiment_handling(object):
                                                           p=p,
                                                           fnames=fnames,
                                                           process_df=process_df)
-
-                    df = df.append(other=eva_return, verify_integrity=True)
+                    if not no_output:
+                        df = df.append(other=eva_return, verify_integrity=True)
 
             # If nodes are available, distribute work amongst nodes.
 
@@ -372,16 +386,17 @@ class experiment_handling(object):
                         self.comm.send(None, dest=source, tag=tags.EXIT)
                 elif tag == tags.DONE:
                     (mx, key, eva_return) = data
-                    df = df.append(eva_return)
+                    if not no_output:
+                        df = df.append(eva_return)
                     tasks_completed += 1
                     self._progress_report(tasks_completed, n_tasks,
                                           "Post-processing...")
                 elif tag == tags.EXIT:
                     closed_nodes += 1
-
-            df = df.unstack(level='key')
-            df.columns = df.columns.droplevel()
-            df.to_pickle(self.path_res + name)
+            if not no_output:
+                df = df.unstack(level='key')
+                df.columns = df.columns.droplevel()
+                df.to_pickle(self.path_res + name)
             print('\nDone')
 
         if self.amNode:
@@ -413,8 +428,8 @@ class experiment_handling(object):
 
         self.comm.Barrier()
 
-    @staticmethod
-    def _evaluate_eva(eva, key, fnames, msg=None):
+#    @staticmethod
+    def _evaluate_eva(self, eva, key, fnames, msg=None):
         """Evaluate eva for given key and filenames.
 
         Also and do proper error logging to enable debugging.
@@ -441,9 +456,8 @@ class experiment_handling(object):
         try:
             eva_return = eva[key](fnames)
         except ValueError:
-            print('value error in eva evaluation of {} at {}\n'.format(key, msg))
-            print('with the following files:')
-            print(fnames)
+            print('value error in eva of {} at {}\n'.format(key, msg))
+            traceback.print_tb(ValueError)
             eva_return = None
 
         return eva_return
@@ -472,7 +486,10 @@ class experiment_handling(object):
         eva_return: pandas Dataframe
 
         """
-        eva_return = self._evaluate_eva(eva, key, fnames, 'processing data  ')
+        eva_return = self._evaluate_eva(eva, key, fnames, 'processing data for parameters {} with {} files'.format(p, len(fnames)))
+
+        if eva_return is None:
+            return
 
         if process_df:
             index_names = self.index_names + ["timesteps", "observables"]
@@ -536,6 +553,7 @@ class experiment_handling(object):
         res = str(parameter_combination)  # convert to sting
         res = res[1:-1]  # delete brackets
         res = res.replace(", ", "-")  # remove ", " with "-"
+        res = res.replace(",", "-")  # remove "," with "-"
         res = res.replace(".", "o")  # replace dots with an "o"
         res = res.replace("'", "")  # remove 's from values of string variables
         # Remove all the other left over mean
@@ -548,6 +566,7 @@ class experiment_handling(object):
         else:
             res += "_s" + str(i)  # add sample size
             res += ".pkl"  # add file type
+
         return res
 
     @staticmethod
