@@ -22,7 +22,7 @@ resaving is parallelized such that parameter combinations are
 distributed amongs nodes. For small sample sizes, a serial
 implementation could be faster due to overhead...
 """
-from __future__ import print_function
+# from __future__ import print_function
 
 import glob
 import os
@@ -64,8 +64,15 @@ tags = enum('START', 'READY', 'DONE', 'FAILED', 'EXIT')
 class experiment_handling(object):
     """Class doc string."""
 
-    def __init__(self, sample_size, parameter_combinations, index, path_raw,
-                 path_res='./data/', use_kwargs=False):
+    def __init__(self,
+                 sample_size,
+                 parameter_combinations,
+                 index,
+                 run_func,
+                 runfunc_output,
+                 path_raw,
+                 path_res='./data/',
+                 use_kwargs=False):
         """
         Set up the experiment handling class.
 
@@ -114,10 +121,20 @@ class experiment_handling(object):
         self.index_names = [self.index[key] for key in range(len(self.index))]
 
         # add "/" to paths if missing
-        self.path_raw = path_raw + "/" if not path_raw.endswith("/") else \
-            path_raw
+        # self.path_raw = path_raw + "/" if not path_raw.endswith("/") else \
+        #    path_raw
         self.path_res = path_res + "/" if not path_res.endswith("/") else \
             path_res
+
+
+        if path_raw[-1] == "/":
+            self.path_raw = path_raw[0:-1] + ".h5"
+        elif path_raw[-3:] == ".h5":
+            self.path_raw = path_raw 
+        else:
+            self.path_raw = path_raw + ".h5"
+        self.path_raw = os.path.abspath(self.path_raw)
+
 
         # load mpi4py MPI environment and get size and ranks
         self.comm = MPI.COMM_WORLD
@@ -151,11 +168,17 @@ class experiment_handling(object):
                     if self.use_kwargs:
                         self.tasks.append((kwp, filename))
                     else:
-                        self.tasks.append((p, filename))
+                        # - NEW
+                        self.tasks.append((p, s))
+                        # for now does not check if already computed (TODO)
+                        # - - -
+                        #self.tasks.append((p, filename))
 
         self.filenames = []
+        self.run_func = run_func
+        self.runfunc_output = runfunc_output
 
-    def compute(self, run_func, skipbadruns=False):
+    def compute(self, skipbadruns=False):
         """
         Compute the experiment.
 
@@ -175,12 +198,12 @@ class experiment_handling(object):
             recalculated, than set to "True". Possible reason: speed.
 
         """
-        assert (callable(run_func)), "run_func must be callable"
+        # assert (callable(run_func)), "run_func must be callable"
         assert (isinstance(skipbadruns, bool)), "scipbadruns must be boolean"
         if self.amMaster:
             # check, if path exists. If not, create.
-            if not os.path.exists(self.path_raw):
-                os.makedirs(self.path_raw)
+            #if not os.path.exists(self.path_raw):
+            #    os.makedirs(self.path_raw)
 
             # give brief feedback about remaining work.
             print(str(len(self.tasks)) + " of "
@@ -190,15 +213,21 @@ class experiment_handling(object):
             # check if nodes are available. If not, do serial calculation.
             if self.n_nodes < 1:
                 print("Only one node available. No parallel execution.")
-
+                print("Saving rawdata at {}".format(self.path_raw))
                 for task in self.tasks:
-                    (params, filename) = task
+                    # print(task)
+                    (params, sample) = task
                     result = -1
                     while result < 0:
                         if self.use_kwargs:
-                            result = run_func(filename=filename, **params)
+                            result = self.run_func(filename=filename, **params)
                         else:
-                            result = run_func(*params, filename=filename)
+                            # new
+
+                            self.run_func(*params, self._obtain_store_function(task))
+                            result = 42
+                            # 
+                            # result = run_func(*params, filename=filename)
 
             print("Splitting calculations to {} nodes.".format(self.n_nodes))
             sys.stdout.flush()
@@ -246,9 +275,9 @@ class experiment_handling(object):
                     # go work:
                     (params, filename) = task
                     if self.use_kwargs:
-                        result = run_func(filename=filename, **params)
+                        result = self.run_func(filename=filename, **params)
                     else:
-                        result = run_func(*params, filename=filename)
+                        result = self.run_func(*params, filename=filename)
                     if result >= 0:
                         self.comm.send(result, dest=self.master, tag=tags.DONE)
                     else:
@@ -259,6 +288,53 @@ class experiment_handling(object):
             self.comm.send(None, dest=self.master, tag=tags.EXIT)
 
         self.comm.Barrier()
+
+
+    def _get_store_index_names(self):
+        """Obtain the names of parameters, sample and result index.
+
+        """
+        # TODO: take care for runfunc_output
+        param_names = self.run_func.__code__\
+            .co_varnames[:self.run_func.__code__.co_argcount-1]
+        mix_names = param_names + ("sample",) +\
+            tuple(self.runfunc_output.index.names)
+
+        return mix_names
+
+    def _obtain_store_function(self, task):
+        """
+        Obtain a function to be given to the run_func to store the reuslts.
+        """
+
+        def store(run_func_result):
+           
+            print(run_func_result.index.names)
+            print(self.runfunc_output.index.names)
+            print(run_func_result.index.names == self.runfunc_output.index.names)
+            assert run_func_result.index.names == self.runfunc_output.index.names
+           
+            print(run_func_result.columns)
+            print(self.runfunc_output.columns)
+            print(run_func_result.columns == self.runfunc_output.columns)
+            assert (run_func_result.columns == self.runfunc_output.columns).all()
+
+            ID = [[p] for p in task[0]] + [[task[1]]] # last one is sample
+            mix = pd.MultiIndex.from_product(
+                ID + [run_func_result.index.values], 
+                names=self._get_store_index_names()
+                )
+
+            mrfs = pd.DataFrame(data=run_func_result.values,
+                                index=mix, columns=run_func_result.columns)
+
+            # appending to hdf5 store
+            # TODO: needs to be updated for threating use
+            with pd.HDFStore(self.path_raw, mode="a") as store:
+                store.append("dat", mrfs)
+
+        return store
+
 
     def resave(self, eva, name, no_output=False):
         """
