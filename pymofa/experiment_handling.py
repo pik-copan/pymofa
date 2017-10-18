@@ -120,28 +120,17 @@ class experiment_handling(object):
         self.index = index
         self.index_names = [self.index[key] for key in range(len(self.index))]
 
-
+        # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - 
+        #     TODO: discuss if needed???
+        # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - 
         # add "/" to paths if missing
         # self.path_raw = path_raw + "/" if not path_raw.endswith("/") else \
         #    path_raw
         self.path_res = path_res + "/" if not path_res.endswith("/") else \
             path_res
+        # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - 
 
-        # ------------------------------------------
-        # -->  AUSLAGERN
-        if path_raw[-1] == "/":
-            self.path_raw = path_raw[0:-1] + ".h5"
-        elif path_raw[-3:] == ".h5":
-            self.path_raw = path_raw 
-        else:
-            self.path_raw = path_raw + ".h5"
-        self.path_raw = os.path.abspath(self.path_raw)
-
-        # check, if path exists. If not, create.
-        dirpath = os.path.dirname(self.path_raw)
-        if not os.path.exists(dirpath):
-            os.makedirs(dirpath)
-        #-  ------------------------------------------------
+        self.path_raw = self._treat_path(path_raw)
 
         # load mpi4py MPI environment and get size and ranks
         self.comm = MPI.COMM_WORLD
@@ -162,7 +151,6 @@ class experiment_handling(object):
         else:
             self.amMaster = False
             self.amNode = True
-
 
         # - - - - - - - - - - - - - - - - - - - - - - - - - 
         #     TODO: to  be removed (discuss use_kwargs first)
@@ -188,6 +176,24 @@ class experiment_handling(object):
         self.filenames = []
         self.run_func = run_func
         self.runfunc_output = runfunc_output
+
+    @staticmethod
+    def _treat_path(path_raw):
+
+        if path_raw[-1] == "/":
+            real_path_raw = path_raw[0:-1] + ".h5"
+        elif path_raw[-3:] == ".h5":
+            real_path_raw = path_raw 
+        else:
+            real_path_raw = path_raw + ".h5"
+        real_path_raw = os.path.abspath(real_path_raw)
+
+        # check, if path exists. If not, create.
+        dirpath = os.path.dirname(real_path_raw)
+        if not os.path.exists(dirpath):
+            os.makedirs(dirpath)
+
+        return real_path_raw
 
     def _obtain_remaining_tasks(self):
         """Check what task are already computed and return the remaining ones.
