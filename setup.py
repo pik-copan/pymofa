@@ -10,10 +10,10 @@ from setuptools import setup
 
 setup(name="pymofa",
       version="0.1.0",
-      description="to be added",
-      url="to be added",
+      description="PYthon MOdelling FrAmework",
+      url="https://github.com/wbarfuss/pymofa",
       author="Copan-group @ PIK",
-      author_email="to be added",
+      author_email="barfuss@pik-potsdam.de",
       license="MIT",
       packages=["pymofa"],
       install_requires=[
@@ -24,6 +24,7 @@ setup(name="pymofa",
             "pandas>=0.19.0",
       ],
       # see http://stackoverflow.com/questions/15869473/
-      # what-is-the-advantage-of-setting-zip-safe-to-true-when-packaging-a-python-projec
+      # what-is-the-advantage-of-setting-zip-safe-to-true-when-packaging-a
+      # -python-projec
       zip_safe=False
       )
