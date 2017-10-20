@@ -18,24 +18,25 @@ Usecase
 Features
 --------
 * Computes parallel
-* Works iteratively /- pymofa checks wheter you have already computed some task
-  and won't compute these again/
+* Works iteratively - *pymofa checks wheter you have already computed some task
+  and won't compute these again*
 
 Design
 ------
-* With pymofa you write one python file to set up your computer experiment
-* This will contain a function (called the RUN_FUNC) that starts your model run
+* With pymofa you write one python file to set up one computer experiment
+* This python file will contain a function (called the RUN_FUNC) that configures and exectues your model run
 * The parameters of the RUN_FUNC will be the parameters of the experiment
-  This means:
-  * Raw data will be stored with these parameters
-  * You will need to give pymofa a list of parameter combination (i.e. a tuple
-    of parameter values of the same length as the parameters)
-  * If you want to change the parameters, write a new experiment 
+
+This means:
+* Raw data will be stored with these parameters
+* You will need to give pymofa a list of parameter combination (i.e. a tuple
+  of parameter values of the same length as the parameters)
+* If you want to change the parameters, write a new experiment 
 
 Usage
 -----
 Please have a look at the tutorials (either interactivly after downloading this
-repository or by starting here)
+repository or by starting `here <https://github.com/wbarfuss/pymofa/blob/master/tutorial/01_RunningAModel.ipynb>`_)
 
 For further documentation, use the source!
 
