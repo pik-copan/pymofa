@@ -11,7 +11,7 @@ import time
 
 class SafeHDFStore(HDFStore):
     def __init__(self, *args, **kwargs):
-        probe_interval = kwargs.pop("probe_interval", 0.2)
+        probe_interval = kwargs.pop("probe_interval", 0.1)
         self._lock = "%s.lock" % args[0]
         while True:
             try:

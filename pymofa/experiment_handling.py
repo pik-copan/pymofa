@@ -67,14 +67,11 @@ class experiment_handling(object):
     """Class doc string."""
 
     def __init__(self,
-                 sample_size,
-                 parameter_combinations,
-                 index,
                  run_func,
                  runfunc_output,
-                 path_raw,
-                 path_res='./data/',
-                 use_kwargs=False):
+                 parameter_combinations,
+                 sample_size,
+                 path_raw):
         """
         Set up the experiment handling class.
 
@@ -88,51 +85,39 @@ class experiment_handling(object):
 
         Parameters
         ----------
-        sample_size : int
-            number of runs for each parameter combination e.g.
-            size of the ensemble for statistical evaluation
+        run_func : func
+            function to set up and execute the pymofa experiment
+        runfunc_output : pd.DataFrame
+            dataframe with columns and index named as the run_func will store
+            its results. May contain no values.
         parameter_combinations: list[tuples]
             list of parameter combinations that are stored in
             tuples. Number of Parameters for each combination
             has to fit the number of input Parameters of the
             run function.
-        index : dict
-            indicating the varied Parameters as
-            {position in parameter_combinations: name}
-            is needed for post processing to create the
-            multi index containing the variable Parameters
+        sample_size : int
+            number of runs for each parameter combination e.g.
+            size of the ensemble for statistical evaluation
         path_raw : string
             absolute path to the raw data of the computations
-        path_res : string
-            absolute path to the post processed data
-
         """
 
         print('initializing pymofa experiment handle')
 
         self.sample_size = sample_size
-
-        self.kwparameter_combinations = \
-            [{index[i]: params[i]
-              for i in index.keys()}
-             for params in parameter_combinations]
-
         self.parameter_combinations = parameter_combinations
-        self.use_kwargs = use_kwargs
-        self.index = index
-        self.index_names = [self.index[key] for key in range(len(self.index))]
 
-        # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-        #     TODO: discuss if needed???
-        # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-        # add "/" to paths if missing
-        # self.path_raw = path_raw + "/" if not path_raw.endswith("/") else \
-        #    path_raw
-        self.path_res = path_res + "/" if not path_res.endswith("/") else \
-            path_res
-        # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+        self.run_func = run_func
+        self.runfunc_output = runfunc_output
+        # TODO: make runfunc_output optional by obtaining the output by
+        #       executing the run_func (maybe this is not possible)
+
+        self.index = {i: run_func.__code__.co_varnames[i]
+                      for i in range(run_func.__code__.co_argcount-1)}
 
         self.path_raw = self._treat_path(path_raw)
+
+        self.tasks, self.computed_tasks = self._obtain_remaining_tasks()
 
         # load mpi4py MPI environment and get size and ranks
         self.comm = MPI.COMM_WORLD
@@ -154,30 +139,10 @@ class experiment_handling(object):
             self.amMaster = False
             self.amNode = True
 
-        # - - - - - - - - - - - - - - - - - - - - - - - - -
-        #     TODO: to  be removed (discuss use_kwargs first)
-        # - - - - - - - - - - - - - - - - - - - - - - - - -
-        # create list of tasks (parameter_combs*sample_size)
-        # and paths to save the results.
-        # self.tasks = []
-        # for s in range(self.sample_size):
-        #     for p, kwp in zip(self.parameter_combinations,
-        #                       self.kwparameter_combinations):
-        #         filename = self.path_raw + self._get_id(p, s)
-        #         if not os.path.exists(filename):
-        #             if self.use_kwargs:
-        #                 self.tasks.append((kwp, filename))
-        #             else:
-        #                 # - NEW
-        #                 self.tasks.append((p, s))
-        #                 # for now does not check if already computed (TODO)
-        #                 # - - -
-        #                 #self.tasks.append((p, filename))
-        self.tasks, self.computed_tasks = self._obtain_remaining_tasks()
 
-        self.filenames = []
-        self.run_func = run_func
-        self.runfunc_output = runfunc_output
+        # only used in resave (to be deleted?)
+        self.index_names = [self.index[key] for key in range(len(self.index))]
+
 
     @staticmethod
     def _treat_path(path_raw):
@@ -282,66 +247,71 @@ class experiment_handling(object):
             recalculated, than set to "True". Possible reason: speed.
 
         """
-        # assert (callable(run_func)), "run_func must be callable"
         assert (isinstance(skipbadruns, bool)), "scipbadruns must be boolean"
-        if self.amMaster:
-            # check, if path exists. If not, create.
-            #if not os.path.exists(self.path_raw):
-            #    os.makedirs(self.path_raw)
 
+        if self.amMaster:
             # give brief feedback about remaining work.
             print(str(len(self.tasks)) + " of "
                   + str(len(self.parameter_combinations) * self.sample_size)
                   + " single computations left")
 
+            print("Saving rawdata at {}".format(self.path_raw))
+            
+            tasks_completed = 0
+            # = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = =
             # check if nodes are available. If not, do serial calculation.
+            # = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = =
             if self.n_nodes < 1:
                 print("Only one node available. No parallel execution.")
-                print("Saving rawdata at {}".format(self.path_raw))
                 for task in self.tasks:
-                    # print(task)
                     (params, sample) = task
                     result = -1
                     while result < 0:
-                        if self.use_kwargs:
-                            result = self.run_func(filename=filename, **params)
-                        else:
-                            # new
-                            result = self.run_func(*params,
-                                self._obtain_store_function(task))
+                        # TODO: care for never finishing tasks
+                        result = self.run_func(*params,
+                            self._obtain_store_function(task))
 
-            print("Splitting calculations to {} nodes.".format(self.n_nodes))
-            sys.stdout.flush()
-
-            task_index = 0
-            tasks_completed = 0
-            closed_nodes = 0
-            while closed_nodes < self.n_nodes:
-                n_return = self.comm.recv(source=MPI.ANY_SOURCE,
-                                          tag=MPI.ANY_TAG, status=self.status)
-                source = self.status.Get_source()
-                tag = self.status.Get_tag()
-                if tag == tags.READY:
-                    # node is ready, can take new task
-                    if task_index < len(self.tasks):
-                        self.comm.send(self.tasks[task_index], dest=source,
-                                       tag=tags.START)
-                        task_index += 1
-                    else:
-                        self.comm.send(None, dest=source, tag=tags.EXIT)
-                elif tag == tags.FAILED:
-                    # node failed to complete.
-                    # retry (failed runs send their task as return)
-                    self.comm.send(n_return, dest=source, tag=tags.START)
-                elif tag == tags.DONE:
-                    # node succeeded
                     tasks_completed += 1
                     self._progress_report(tasks_completed, len(self.tasks),
                                           "Calculating...")
-                elif tag == tags.EXIT:
-                    # node completed all tasks. close
-                    closed_nodes += 1
-            print("Calculating 0 ...done.")
+            # = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = =
+            else:
+            # = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = =
+                print("Splitting calculations to {} nodes."\
+                    .format(self.n_nodes))
+                sys.stdout.flush()
+
+                task_index = 0
+                closed_nodes = 0
+                while closed_nodes < self.n_nodes:
+                    n_return = self.comm.recv(source=MPI.ANY_SOURCE,
+                                              tag=MPI.ANY_TAG,
+                                              status=self.status)
+                    source = self.status.Get_source()
+                    tag = self.status.Get_tag()
+
+                    if tag == tags.READY:
+                        # node is ready, can take new task
+                        if task_index < len(self.tasks):
+                            self.comm.send(self.tasks[task_index], dest=source,
+                                           tag=tags.START)
+                            task_index += 1
+                        else:
+                            self.comm.send(None, dest=source, tag=tags.EXIT)
+
+                    elif tag == tags.FAILED:  # node failed to complete.
+                        # retry (failed runs send their task as return)
+                        self.comm.send(n_return, dest=source, tag=tags.START)
+
+                    elif tag == tags.DONE:
+                        # node succeeded
+                        tasks_completed += 1
+                        self._progress_report(tasks_completed, len(self.tasks),
+                                              "Calculating...")
+                    elif tag == tags.EXIT:
+                        # node completed all tasks. close
+                        closed_nodes += 1
+            print("\nCalculattion done.")
 
         if self.amNode:
             # Nodes work as follows:
@@ -352,22 +322,15 @@ class experiment_handling(object):
                                       status=self.status)
                 tag = self.status.Get_tag()
 
-                if tag == tags.START:
-                    # go work:
+                if tag == tags.START:  # go work:
                     (params, filename) = task
-
-
-                    if self.use_kwargs:
-                        result = self.run_func(filename=filename, **params)
-                    else:
-                        # result = self.run_func(*params, filename=filename)
-                        result = self.run_func(*params,
-                                self._obtain_store_function(task))
-
+                    result = self.run_func(*params, 
+                                           self._obtain_store_function(task))
                     if result >= 0:
                         self.comm.send(result, dest=self.master, tag=tags.DONE)
                     else:
                         self.comm.send(task, dest=self.master, tag=tags.FAILED)
+ 
                 elif tag == tags.EXIT:
                     break
 
@@ -377,8 +340,8 @@ class experiment_handling(object):
 
 
     def _get_store_index_names(self):
-        """Obtain the names of parameters, sample and result index.
-
+        """
+        Obtain the names of parameters, sample and result index.
         """
         # TODO: take care for runfunc_output
         param_names = self.run_func.__code__\
@@ -390,15 +353,17 @@ class experiment_handling(object):
 
     def _obtain_store_function(self, task):
         """
-        Obtain a function to be given to the run_func to store the reuslts.
+        Obtain a function to be given to the run_func to store the results.
         """
 
         def store(run_func_result):
-            assert run_func_result.index.names == self.runfunc_output.index.names
-            assert (run_func_result.columns == self.runfunc_output.columns).all()
+            assert run_func_result.index.names ==\
+                self.runfunc_output.index.names
+            assert (run_func_result.columns ==\
+                self.runfunc_output.columns).all()
             # TODO: (maybe) sort columns alphabetically (depends on speed)
 
-            ID = [[p] for p in task[0]] + [[task[1]]] # last one is sample
+            ID = [[p] for p in task[0]] + [[task[1]]]  # last one is sample
             mix = pd.MultiIndex.from_product(
                 ID + [run_func_result.index.values],
                 names=self._get_store_index_names()
@@ -408,7 +373,6 @@ class experiment_handling(object):
                                 index=mix, columns=run_func_result.columns)
 
             # appending to hdf5 store
-            # TODO: needs to be updated for threating use
             with SafeHDFStore(self.path_raw, mode="a") as store:
                 store.append("dat", mrfs, format='table', data_columns=True)
 
