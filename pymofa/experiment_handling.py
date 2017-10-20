@@ -34,6 +34,8 @@ from scipy.interpolate import interp1d
 
 from mpi4py import MPI
 
+from .safehdfstore import SafeHDFStore
+
 
 def enum(*sequential, **named):
     """
@@ -120,15 +122,15 @@ class experiment_handling(object):
         self.index = index
         self.index_names = [self.index[key] for key in range(len(self.index))]
 
-        # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - 
+        # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
         #     TODO: discuss if needed???
-        # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - 
+        # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
         # add "/" to paths if missing
         # self.path_raw = path_raw + "/" if not path_raw.endswith("/") else \
         #    path_raw
         self.path_res = path_res + "/" if not path_res.endswith("/") else \
             path_res
-        # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - 
+        # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
         self.path_raw = self._treat_path(path_raw)
 
@@ -152,9 +154,9 @@ class experiment_handling(object):
             self.amMaster = False
             self.amNode = True
 
-        # - - - - - - - - - - - - - - - - - - - - - - - - - 
+        # - - - - - - - - - - - - - - - - - - - - - - - - -
         #     TODO: to  be removed (discuss use_kwargs first)
-        # - - - - - - - - - - - - - - - - - - - - - - - - - 
+        # - - - - - - - - - - - - - - - - - - - - - - - - -
         # create list of tasks (parameter_combs*sample_size)
         # and paths to save the results.
         # self.tasks = []
@@ -171,7 +173,7 @@ class experiment_handling(object):
         #                 # for now does not check if already computed (TODO)
         #                 # - - -
         #                 #self.tasks.append((p, filename))
-        self.tasks = self._obtain_remaining_tasks()
+        self.tasks, self.computed_tasks = self._obtain_remaining_tasks()
 
         self.filenames = []
         self.run_func = run_func
@@ -183,7 +185,7 @@ class experiment_handling(object):
         if path_raw[-1] == "/":
             real_path_raw = path_raw[0:-1] + ".h5"
         elif path_raw[-3:] == ".h5":
-            real_path_raw = path_raw 
+            real_path_raw = path_raw
         else:
             real_path_raw = path_raw + ".h5"
         real_path_raw = os.path.abspath(real_path_raw)
@@ -198,12 +200,13 @@ class experiment_handling(object):
     def _obtain_remaining_tasks(self):
         """Check what task are already computed and return the remaining ones.
         """
-        
+
         # check wheter the file exists at all
         if not os.path.exists(self.path_raw):
             # if not existend - all given task have to be computed
             tasks = [(pc, s) for s in range(self.sample_size)
                      for pc in self.parameter_combinations]
+            finished_tasks = []
         else:
             # file exits - check for already computed tasks
             tasks = []
@@ -213,23 +216,30 @@ class experiment_handling(object):
             # MUCH FASTER (test for small use cases)
             # 1) create task df
             index_values = []
-            with pd.HDFStore(self.path_raw) as store:
+            with SafeHDFStore(self.path_raw) as store:
                 for p in self.index.values():
                     index_values.append(store.select_column("dat", p))
                 index_values.append(store.select_column("dat", "sample"))
-            comp_tasks = pd.DataFrame(index_values).T.drop_duplicates().values
+            finished_tasks = pd.DataFrame(index_values).T.drop_duplicates()
+            comp_tasks = finished_tasks.values
 
             # 2) go through parameter combinations and sample and check
             for pc in self.parameter_combinations:
                 for s in range(self.sample_size):
                     pcs = pc + (s, )
-                    if not (pcs == comp_tasks).all(axis=1).any():
-                        # taks not yet computed
-                        tasks.append((pc, s))
-
+                    try:
+                        if not (pcs == comp_tasks).all(axis=1).any():
+                            # taks not yet computed
+                            tasks.append((pc, s))
+                    except:
+                        print(comp_tasks.shape)
+                        print(finished_tasks.columns.names)
+                        print(pcs)
+                        raise
+ 
             # # method 2: query hdf5 store
             # loads all results (one at time) into memory
-            # (SLOWER FOR SMALL USE CASES)  
+            # (SLOWER FOR SMALL USE CASES)
             # tasks = []
             # for pc in self.parameter_combinations:
             #     for s in range(self.sample_size):
@@ -249,7 +259,7 @@ class experiment_handling(object):
               + str(len(self.parameter_combinations) * self.sample_size)
               + " single computations left")
 
-        return tasks
+        return tasks, finished_tasks
 
 
     def compute(self, skipbadruns=False):
@@ -299,7 +309,7 @@ class experiment_handling(object):
                             # new
                             result = self.run_func(*params,
                                 self._obtain_store_function(task))
-                           
+
             print("Splitting calculations to {} nodes.".format(self.n_nodes))
             sys.stdout.flush()
 
@@ -345,10 +355,15 @@ class experiment_handling(object):
                 if tag == tags.START:
                     # go work:
                     (params, filename) = task
+
+
                     if self.use_kwargs:
                         result = self.run_func(filename=filename, **params)
                     else:
-                        result = self.run_func(*params, filename=filename)
+                        # result = self.run_func(*params, filename=filename)
+                        result = self.run_func(*params,
+                                self._obtain_store_function(task))
+
                     if result >= 0:
                         self.comm.send(result, dest=self.master, tag=tags.DONE)
                     else:
@@ -378,14 +393,14 @@ class experiment_handling(object):
         Obtain a function to be given to the run_func to store the reuslts.
         """
 
-        def store(run_func_result):           
+        def store(run_func_result):
             assert run_func_result.index.names == self.runfunc_output.index.names
             assert (run_func_result.columns == self.runfunc_output.columns).all()
             # TODO: (maybe) sort columns alphabetically (depends on speed)
 
             ID = [[p] for p in task[0]] + [[task[1]]] # last one is sample
             mix = pd.MultiIndex.from_product(
-                ID + [run_func_result.index.values], 
+                ID + [run_func_result.index.values],
                 names=self._get_store_index_names()
                 )
 
@@ -394,7 +409,7 @@ class experiment_handling(object):
 
             # appending to hdf5 store
             # TODO: needs to be updated for threating use
-            with pd.HDFStore(self.path_raw, mode="a") as store:
+            with SafeHDFStore(self.path_raw, mode="a") as store:
                 store.append("dat", mrfs, format='table', data_columns=True)
 
         return store
