@@ -36,7 +36,7 @@ This means:
 Usage
 -----
 Please have a look at the tutorials (either interactivly after downloading this
-repository or by starting `here <https://github.com/wbarfuss/pymofa/blob/master/tutorial/01_RunningAModel.ipynb>`_)
+repository or by starting `here <https://github.com/wbarfuss/pymofa/blob/master/tutorial/01_QuickStart.ipynb>`_)
 
 For further documentation, use the source!
 

@@ -113,7 +113,7 @@ class experiment_handling(object):
         #       executing the run_func (maybe this is not possible)
 
         self.index = {i: run_func.__code__.co_varnames[i]
-                      for i in range(run_func.__code__.co_argcount-1)}
+                      for i in range(run_func.__code__.co_argcount)}
 
         self.path_raw = self._treat_path(path_raw)
 
@@ -265,13 +265,13 @@ class experiment_handling(object):
                 print("Only one node available. No parallel execution.")
                 for task in self.tasks:
                     (params, sample) = task
-                    result = -1
-                    while result < 0:
+                    exit_status = -1
+                    while exit_status < 0:
                         # TODO: care for never finishing tasks
-                        result = self.run_func(*params,
-                            self._obtain_store_function(task))
+                        exit_status, result = self.run_func(*params)
 
                     tasks_completed += 1
+                    self._obtain_store_function(task)(result)
                     self._progress_report(tasks_completed, len(self.tasks),
                                           "Calculating...")
             # = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = =
@@ -306,6 +306,11 @@ class experiment_handling(object):
                     elif tag == tags.DONE:
                         # node succeeded
                         tasks_completed += 1
+
+                        # store results
+                        # completed runs send thier (task, result) as return
+                        self._obtain_store_function(n_return[0])(n_return[1])
+
                         self._progress_report(tasks_completed, len(self.tasks),
                                               "Calculating...")
                     elif tag == tags.EXIT:
@@ -324,10 +329,9 @@ class experiment_handling(object):
 
                 if tag == tags.START:  # go work:
                     (params, filename) = task
-                    result = self.run_func(*params, 
-                                           self._obtain_store_function(task))
-                    if result >= 0:
-                        self.comm.send(result, dest=self.master, tag=tags.DONE)
+                    exit_status, result = self.run_func(*params)
+                    if exit_status >= 0:
+                        self.comm.send((task, result), dest=self.master, tag=tags.DONE)
                     else:
                         self.comm.send(task, dest=self.master, tag=tags.FAILED)
  
@@ -345,7 +349,7 @@ class experiment_handling(object):
         """
         # TODO: take care for runfunc_output
         param_names = self.run_func.__code__\
-            .co_varnames[:self.run_func.__code__.co_argcount-1]
+            .co_varnames[:self.run_func.__code__.co_argcount]
         mix_names = param_names + ("sample",) +\
             tuple(self.runfunc_output.index.names)
 
