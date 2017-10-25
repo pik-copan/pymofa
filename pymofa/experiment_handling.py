@@ -32,6 +32,8 @@ import numpy as np
 import pandas as pd
 from scipy.interpolate import interp1d
 
+import datetime  # for verbose info 
+
 from mpi4py import MPI
 
 from .safehdfstore import SafeHDFStore
@@ -117,7 +119,7 @@ class experiment_handling(object):
 
         self.path_raw = self._treat_path(path_raw)
 
-        self.tasks, self.computed_tasks = self._obtain_remaining_tasks()
+        self.tasks = self._obtain_remaining_tasks()
 
         # load mpi4py MPI environment and get size and ranks
         self.comm = MPI.COMM_WORLD
@@ -179,14 +181,21 @@ class experiment_handling(object):
             # method 1: task dataframe
             # only loads index into memeory
             # MUCH FASTER (test for small use cases)
+            # PRODUCE MEMOREY ERROR FOR LARGE RAW DATA (line 189)
             # 1) create task df
-            index_values = []
+            # index_values = []
+            # with SafeHDFStore(self.path_raw) as store:
+            #     for p in self.index.values():
+            #         index_values.append(store.select_column("dat", p))
+            #     index_values.append(store.select_column("dat", "sample"))
+            # finished_tasks = pd.DataFrame(index_values).T.drop_duplicates()
+            # comp_tasks = finished_tasks.values
+
+            # 1) obtain computed tasks (alternative)
             with SafeHDFStore(self.path_raw) as store:
-                for p in self.index.values():
-                    index_values.append(store.select_column("dat", p))
-                index_values.append(store.select_column("dat", "sample"))
-            finished_tasks = pd.DataFrame(index_values).T.drop_duplicates()
-            comp_tasks = finished_tasks.values
+                ct = store["ct"]
+            comp_tasks = ct.values
+            print("boooja")
 
             # 2) go through parameter combinations and sample and check
             for pc in self.parameter_combinations:
@@ -205,7 +214,12 @@ class experiment_handling(object):
             # # method 2: query hdf5 store
             # loads all results (one at time) into memory
             # (SLOWER FOR SMALL USE CASES)
+            # EVEN SLOWER -TOO SLOW- FOR LARGER CASES
             # tasks = []
+            # finished_tasks = []
+            # #
+            # now = datetime.datetime.now()
+            # #
             # for pc in self.parameter_combinations:
             #     for s in range(self.sample_size):
             #         wherequery = ""
@@ -218,13 +232,20 @@ class experiment_handling(object):
             #         if len(dat) == 0:
             #             # no data found - adding to tasks
             #             tasks.append((pc, s))
+            #         else:
+            #             finished_tasks.append((pc, s))
+        
+            # print(" ")
+            # print("Obtaining remaining tasks took: ")
+            # print(datetime.datetime.now() - now)
+            # print(" ")
 
         # give brief feedback about remaining work.
         print(str(len(tasks)) + " of "
               + str(len(self.parameter_combinations) * self.sample_size)
               + " single computations left")
 
-        return tasks, finished_tasks
+        return tasks
 
 
     def compute(self, skipbadruns=False):
@@ -359,6 +380,14 @@ class experiment_handling(object):
         """
         Obtain a function to be given to the run_func to store the results.
         """
+
+        # saving the computed task
+        tdf = pd.DataFrame([task[0] + (task[1],)],
+                           columns=self.run_func.__code__.co_varnames
+                           [:self.run_func.__code__.co_argcount] + ("sample",))
+        with SafeHDFStore(self.path_raw, mode="a") as store:
+            store.append("ct", tdf, format='table', data_columns=True)
+
 
         def store(run_func_result):
             assert run_func_result.index.names ==\
