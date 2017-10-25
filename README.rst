@@ -28,6 +28,7 @@ Design
 * The parameters of the RUN_FUNC will be the parameters of the experiment
 
 This means:
+
 * Raw data will be stored with these parameters
 * You will need to give pymofa a list of parameter combination (i.e. a tuple
   of parameter values of the same length as the parameters)
