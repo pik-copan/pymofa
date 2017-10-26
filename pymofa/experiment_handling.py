@@ -119,8 +119,6 @@ class experiment_handling(object):
 
         self.path_raw = self._treat_path(path_raw)
 
-
-
         # load mpi4py MPI environment and get size and ranks
         self.comm = MPI.COMM_WORLD
         self.status = MPI.Status()
@@ -251,6 +249,18 @@ class experiment_handling(object):
         return tasks
 
 
+    def _clean_up(self):
+        """
+        In the case the last run did not terminate correctly make thinks clean.
+
+        Checks wheter there is lock file for the hdf5 database.
+        If yes it removes it.
+        """
+        if os.path.exists(self.path_raw + ".lock"):
+            print("Cleaning... ")
+            os.remove(self.path_raw + ".lock")
+
+
     def compute(self, skipbadruns=False):
         """
         Compute the experiment.
@@ -279,6 +289,7 @@ class experiment_handling(object):
                   + str(len(self.parameter_combinations) * self.sample_size)
                   + " single computations left")
 
+            self._clean_up()
             print("Saving rawdata at {}".format(self.path_raw))
             
             tasks_completed = 0
