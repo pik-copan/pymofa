@@ -119,7 +119,7 @@ class experiment_handling(object):
 
         self.path_raw = self._treat_path(path_raw)
 
-        self.tasks = self._obtain_remaining_tasks()
+
 
         # load mpi4py MPI environment and get size and ranks
         self.comm = MPI.COMM_WORLD
@@ -137,6 +137,9 @@ class experiment_handling(object):
             self.amMaster = True
             self.amNode = False
             print('detected {} nodes in MPI environment'.format(self.size))
+
+            # if master collect the remaining tasks
+            self.tasks = self._obtain_remaining_tasks()
         else:
             self.amMaster = False
             self.amNode = True
