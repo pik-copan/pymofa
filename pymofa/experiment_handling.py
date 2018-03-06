@@ -137,7 +137,9 @@ class experiment_handling(object):
             print('detected {} nodes in MPI environment'.format(self.size))
 
             # if master collect the remaining tasks
+            self._clean_up()
             self.tasks = self._obtain_remaining_tasks()
+
         else:
             self.amMaster = False
             self.amNode = True
@@ -168,16 +170,66 @@ class experiment_handling(object):
     def _obtain_remaining_tasks(self):
         """Check what task are already computed and return the remaining ones.
         """
+        
+        # # # --- obtaining all tasks (at)
+        PCSs = {self.index[k]: np.array(self.parameter_combinations)[:,k]
+                .repeat(self.sample_size)
+                #.astype(type(self.parameter_combinations[:, 0][k]))
+                for k in self.index}
+        PCSs["sample"] = np.array(list(range(self.sample_size)) *\
+            len(self.parameter_combinations)) 
+
+        at = pd.DataFrame(PCSs)
+        for k in self.index:  # type conversion
+            ty = type(self.parameter_combinations[0][k])
+
+            # if ty != bool:                       
+            #     at[self.index[k]] = at[self.index[k]].astype(ty)
+            # else:
+            #     at[self.index[k]] = at[self.index[k]].map({"True": True,
+            #                                                "False": False})
+
+            if ty == bool:
+                at[self.index[k]] = at[self.index[k]].map({"True": True,
+                                                           "False": False})
+            elif ty == str:
+                at[self.index[k]] = at[self.index[k]].astype(ty)
+            else:
+                at[self.index[k]] = pd.to_numeric(at[self.index[k]])
+            at["sample"] = pd.to_numeric(at["sample"])
+
+        tasks = at
 
         # check wheter the file exists at all
-        if not os.path.exists(self.path_raw):
-            # if not existend - all given task have to be computed
-            tasks = [(pc, s) for s in range(self.sample_size)
-                     for pc in self.parameter_combinations]
-            finished_tasks = []
-        else:
+        # OLD
+        # if not os.path.exists(self.path_raw):
+        #     # if not existend - all given task have to be computed
+        #     tasks = [(pc, s) for s in range(self.sample_size)
+        #              for pc in self.parameter_combinations]
+        #     finished_tasks = []
+        # else:
+        if os.path.exists(self.path_raw):
             # file exits - check for already computed tasks
-            tasks = []
+
+            # METHOD 0) hopefully even faster (incl. restructering of `tasks`)
+            # # # --- obtaining computed tasks (ct)
+            with SafeHDFStore(self.path_raw) as store:
+                ct = store["ct"]  # computed tasks
+            mixc = list(self.index.values()) + ["sample"]
+            ct = ct.reset_index()
+            ct_mix = ct.set_index(mixc)
+            ct_mix = ct_mix.drop("index", axis=1)
+
+            # # # --- preparing all tasks (at)
+            at_mix = at.set_index(mixc) 
+
+            # # # --- comparison --> remaining tasks (rt)
+            ct_mix["__computed"] = 42
+            at_mix["__computed"] = 42
+            computed = at_mix.isin(ct_mix)  # via `isin` and multiindex
+            rt = computed.reset_index()  
+            rt = rt[rt["__computed"] == False]
+            tasks = rt.drop("__computed", axis=1)
 
             # method 1: task dataframe
             # only loads index into memeory
@@ -191,26 +243,31 @@ class experiment_handling(object):
             #     index_values.append(store.select_column("dat", "sample"))
             # finished_tasks = pd.DataFrame(index_values).T.drop_duplicates()
             # comp_tasks = finished_tasks.values
+            # tasks = []
 
-            # 1) obtain computed tasks (alternative)
-            with SafeHDFStore(self.path_raw) as store:
-                ct = store["ct"]
-            comp_tasks = ct.values
-            print("boooja")
+            # # 1) obtain computed tasks (alternative)
+            # with SafeHDFStore(self.path_raw) as store:
+            #     ct = store["ct"]
+            # comp_tasks = ct.values
+            # # print("boooja")
 
-            # 2) go through parameter combinations and sample and check
-            for pc in self.parameter_combinations:
-                for s in range(self.sample_size):
-                    pcs = pc + (s, )
-                    try:
-                        if not (pcs == comp_tasks).all(axis=1).any():
-                            # taks not yet computed
-                            tasks.append((pc, s))
-                    except:
-                        print(comp_tasks.shape)
-                        print(finished_tasks.columns.names)
-                        print(pcs)
-                        raise
+            # # 2) go through parameter combinations and sample and check
+            # for i, pc in enumerate(self.parameter_combinations):
+            #     for j, s in enumerate(range(self.sample_size)):
+            #         self._progress_report(
+            #             i*self.sample_size + j,
+            #             len(self.parameter_combinations)*self.sample_size,
+            #             "Obtaining already computed tasks...")
+            #         pcs = pc + (s, )
+            #         try:
+            #             if not (pcs == comp_tasks).all(axis=1).any():
+            #                 # taks not yet computed
+            #                 tasks.append((pc, s))
+            #         except:
+            #             print(comp_tasks.shape)
+            #             print(finished_tasks.columns.names)
+            #             print(pcs)
+            #             raise
  
             # # method 2: query hdf5 store
             # loads all results (one at time) into memory
@@ -251,7 +308,7 @@ class experiment_handling(object):
 
     def _clean_up(self):
         """
-        In the case the last run did not terminate correctly make thinks clean.
+        In the case the last run did not terminate correctly make things clean.
 
         Checks wheter there is lock file for the hdf5 database.
         If yes it removes it.
@@ -289,7 +346,6 @@ class experiment_handling(object):
                   + str(len(self.parameter_combinations) * self.sample_size)
                   + " single computations left")
 
-            self._clean_up()
             print("Saving rawdata at {}".format(self.path_raw))
             
             tasks_completed = 0
@@ -298,8 +354,15 @@ class experiment_handling(object):
             # = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = =
             if self.n_nodes < 1:
                 print("Only one node available. No parallel execution.")
-                for task in self.tasks:
-                    (params, sample) = task
+                # OLD for task in self.tasks:
+                # NEW 
+                for t in range(len(self.tasks)):
+                    # NEW
+                    task = self.tasks.iloc[t]
+                    # OLD (params, sample) = task
+                    # NEW
+                    params = task[list(self.index.values())].values
+
                     exit_status = -1
                     while exit_status < 0:
                         # TODO: care for never finishing tasks
@@ -328,7 +391,7 @@ class experiment_handling(object):
                     if tag == tags.READY:
                         # node is ready, can take new task
                         if task_index < len(self.tasks):
-                            self.comm.send(self.tasks[task_index], dest=source,
+                            self.comm.send(self.tasks.iloc[task_index], dest=source,
                                            tag=tags.START)
                             task_index += 1
                         else:
@@ -363,7 +426,8 @@ class experiment_handling(object):
                 tag = self.status.Get_tag()
 
                 if tag == tags.START:  # go work:
-                    (params, filename) = task
+                    # (params, filename) = task
+                    params = task[list(self.index.values())].values
                     exit_status, result = self.run_func(*params)
                     if exit_status >= 0:
                         self.comm.send((task, result), dest=self.master, tag=tags.DONE)
@@ -395,22 +459,37 @@ class experiment_handling(object):
         Obtain a function to be given to the run_func to store the results.
         """
 
-        # saving the computed task
-        tdf = pd.DataFrame([task[0] + (task[1],)],
-                           columns=self.run_func.__code__.co_varnames
-                           [:self.run_func.__code__.co_argcount] + ("sample",))
+        # task.name indicates the index number of the all tasks (at) dataframe
+        # hereby I refere to the initial parameter_combs to avoid type problems
+        tsk = (self.parameter_combinations[int(task.name / self.sample_size)],
+               task.name % self.sample_size)
+
+        # for future release: =================================================
+        # avoid int types in parameters
+        # this is usefull if one parameter is declared as only ints but later
+        # changed into float. This would result in an error without this:
+        
+        # tmp = tuple(float(p) if type(p) == int else p for p in tsk[0])
+        # tsk = (tmp, tsk[1])
+        # =====================================================================
+
+        tdf = pd.DataFrame([tsk[0] + (tsk[1],)],
+                           columns=list(self.index.values()) + ["sample"])
+
         with SafeHDFStore(self.path_raw, mode="a") as store:
             store.append("ct", tdf, format='table', data_columns=True)
 
 
-        def store(run_func_result):
+        def store_func(run_func_result):
             assert run_func_result.index.names ==\
                 self.runfunc_output.index.names
             assert (run_func_result.columns ==\
                 self.runfunc_output.columns).all()
             # TODO: (maybe) sort columns alphabetically (depends on speed)
 
-            ID = [[p] for p in task[0]] + [[task[1]]]  # last one is sample
+            # OLD
+            ID = [[p] for p in tsk[0]] + [[tsk[1]]]  # last one is sample
+
             mix = pd.MultiIndex.from_product(
                 ID + [run_func_result.index.values],
                 names=self._get_store_index_names()
@@ -418,12 +497,11 @@ class experiment_handling(object):
 
             mrfs = pd.DataFrame(data=run_func_result.values,
                                 index=mix, columns=run_func_result.columns)
-
             # appending to hdf5 store
             with SafeHDFStore(self.path_raw, mode="a") as store:
                 store.append("dat", mrfs, format='table', data_columns=True)
 
-        return store
+        return store_func
 
 
     def resave(self, eva, name, no_output=False):
