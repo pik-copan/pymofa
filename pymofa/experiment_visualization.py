@@ -23,6 +23,7 @@ import matplotlib as mpl
 def explore_Parameterspace(TwoDFrame,
                            title="",
                            cmap='viridis',
+                           colorbar=True,
                            norm=None,
                            vmin=None,
                            vmax=None,
@@ -67,11 +68,14 @@ def explore_Parameterspace(TwoDFrame,
         fig, ax = plt.subplots()
     c = ax.pcolormesh(X, Y, values, cmap=cmap, norm=norm, vmin=vmin,
                        vmax=vmax)
-    plt.colorbar(c, orientation="vertical")
+    if colorbar:
+        plt.colorbar(c, ax=ax, orientation="vertical")
     ax.set_xlim(np.min(X), np.max(X))
     ax.set_ylim(np.min(Y), np.max(Y))
     ax.set_xlabel(TwoDFrame.columns.name)
     ax.set_ylabel(TwoDFrame.index.name)
+
+    return c
 
 
 def _create_meshgrid(x, y):
