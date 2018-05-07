@@ -172,11 +172,11 @@ class experiment_handling(object):
         """
         
         # # # --- obtaining all tasks (at)
-        PCSs = {self.index[k]: np.array(self.parameter_combinations)[:,k]
+        PCSs = {self.index[k]: np.array(self.parameter_combinations)[:, k]
                 .repeat(self.sample_size)
                 #.astype(type(self.parameter_combinations[:, 0][k]))
                 for k in self.index}
-        PCSs["sample"] = np.array(list(range(self.sample_size)) *\
+        PCSs["sample"] = np.array(list(range(self.sample_size)) *
             len(self.parameter_combinations)) 
 
         at = pd.DataFrame(PCSs)
@@ -338,7 +338,8 @@ class experiment_handling(object):
             recalculated, than set to "True". Possible reason: speed.
 
         """
-        assert (isinstance(skipbadruns, bool)), "scipbadruns must be boolean"
+        assert (isinstance(skipbadruns, bool)), "scipbadruns must be boolean " \
+                                                "but is {}".format(type(skipbadruns))
 
         if self.amMaster:
             # give brief feedback about remaining work.
