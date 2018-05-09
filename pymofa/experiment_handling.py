@@ -407,7 +407,7 @@ class experiment_handling(object):
 
                         # store results
                         # completed runs send thier (task, result) as return
-                        self._obtain_store_function(n_return[0])(n_return[1])
+                        # self._obtain_store_function(n_return[0])(n_return[1])
 
                         self._progress_report(tasks_completed, len(self.tasks),
                                               "Calculating...")
@@ -430,8 +430,15 @@ class experiment_handling(object):
                     params = task[list(self.index.values())].values
                     exit_status, result = self.run_func(*params)
                     if exit_status >= 0:
-                        self.comm.send((task, result), dest=self.master, tag=tags.DONE)
+                        # get storage function for finished task
+                        sf = self._obtain_store_function(task)
+                        # repeatedly try to store results until it works.
+                        while sf(result) < 0:
+                            pass
+                        # report to master that task is done
+                        self.comm.send(task, dest=self.master, tag=tags.DONE)
                     else:
+                        # report to master that task has failed
                         self.comm.send(task, dest=self.master, tag=tags.FAILED)
  
                 elif tag == tags.EXIT:
@@ -479,7 +486,6 @@ class experiment_handling(object):
         with SafeHDFStore(self.path_raw, mode="a") as store:
             store.append("ct", tdf, format='table', data_columns=True)
 
-
         def store_func(run_func_result):
             assert run_func_result.index.names ==\
                 self.runfunc_output.index.names
@@ -498,8 +504,12 @@ class experiment_handling(object):
             mrfs = pd.DataFrame(data=run_func_result.values,
                                 index=mix, columns=run_func_result.columns)
             # appending to hdf5 store
-            with SafeHDFStore(self.path_raw, mode="a") as store:
-                store.append("dat", mrfs, format='table', data_columns=True)
+            try:
+                with SafeHDFStore(self.path_raw, mode="a") as store:
+                    store.append("dat", mrfs, format='table', data_columns=True)
+                return 1
+            except:
+                return -1
 
         return store_func
 
