@@ -407,6 +407,8 @@ class experiment_handling(object):
 
                         # store results
                         # completed runs send thier (task, result) as return
+                        # This was moved to slaves due to unpickling errors when
+                        # sending large packages of data between nodes.
                         # self._obtain_store_function(n_return[0])(n_return[1])
 
                         self._progress_report(tasks_completed, len(self.tasks),
