@@ -23,11 +23,11 @@ implementation could be faster due to overhead...
 # from __future__ import print_function
 
 import glob
-import numpy as np
 import os
 import sys
 import traceback
 
+import numpy as np
 import pandas as pd
 from mpi4py import MPI
 from scipy.interpolate import interp1d
@@ -166,14 +166,14 @@ class experiment_handling(object):
         """
 
         # # # --- obtaining all tasks (at)
-        PCSs = {self.index[k]: np.array(self.parameter_combinations)[:, k]
-            .repeat(self.sample_size)
-                # .astype(type(self.parameter_combinations[:, 0][k]))
-                for k in self.index}
-        PCSs["sample"] = np.array(list(range(self.sample_size)) * \
-                                  len(self.parameter_combinations))
+        param_combss = {self.index[k]: np.array(self.parameter_combinations)[:, k]
+                        .repeat(self.sample_size)
+                        # .astype(type(self.parameter_combinations[:, 0][k]))
+                        for k in self.index}
+        param_combss["sample"] = np.array(list(range(self.sample_size)) *
+                                          len(self.parameter_combinations))
 
-        at = pd.DataFrame(PCSs)
+        at = pd.DataFrame(param_combss)
 
         for k in self.index:  # type conversion
             ty = type(self.parameter_combinations[0][k])
@@ -184,7 +184,7 @@ class experiment_handling(object):
             #     at[self.index[k]] = at[self.index[k]].map({"True": True,
             #                                                "False": False})
 
-            # pd.DataFrame(PCSs) seems to do weird typecastings,
+            # pd.DataFrame(param_combss) seems to do weird typecastings,
             # especially with boolean values.
             # The following is supposed to correct this.
             if ty == bool:
@@ -326,11 +326,6 @@ class experiment_handling(object):
 
         Parameters
         ----------
-        run_func : function
-            The function the executes the Model for a given set of Parameters.
-            The first P paramters need to fit to the parameter_combinations.
-            The last parameter of run_func has to be named filename
-            If run_func succeded, it returns >=0, else it returns < 0
         skipbadruns : bool (Default: False)
             If you don't want this function to check for bad runs that shall be
             recalculated, than set to "True". Possible reason: speed.
@@ -372,8 +367,8 @@ class experiment_handling(object):
                                           "Calculating...")
             # = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = =
             else:
-            # = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = =
-                print("Splitting calculations to {} nodes." \
+                # = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = =
+                print("Splitting calculations to {} nodes."
                       .format(self.n_nodes))
                 sys.stdout.flush()
 
@@ -456,7 +451,7 @@ class experiment_handling(object):
         param_names = self.run_func.__code__ \
                           .co_varnames[:self.run_func.__code__.co_argcount]
         mix_names = param_names + ("sample",) + \
-                    tuple(self.runfunc_output.index.names)
+            tuple(self.runfunc_output.index.names)
 
         return mix_names
 
@@ -511,7 +506,6 @@ class experiment_handling(object):
                 return -1
 
         return store_func
-
 
     def resave(self, eva, name, no_output=False):
         """
@@ -681,7 +675,6 @@ class experiment_handling(object):
 
         self.comm.Barrier()
 
-
     #    @staticmethod
     def _evaluate_eva(self, eva, key, fnames, msg=None):
         """Evaluate eva for given key and filenames.
@@ -715,7 +708,6 @@ class experiment_handling(object):
             eva_return = None
 
         return eva_return
-
 
     def _process_eva_output(self, eva,
                             p, key, fnames, process_df):
@@ -783,7 +775,6 @@ class experiment_handling(object):
             return pd.DataFrame(index=m_index,
                                 data=[eva_return])
 
-
     @staticmethod
     def _get_id(parameter_combination, i=None):
         """
@@ -825,7 +816,6 @@ class experiment_handling(object):
             res += ".pkl"  # add file type
 
         return res
-
 
     @staticmethod
     def _progress_report(i, loop_length, msg=""):
