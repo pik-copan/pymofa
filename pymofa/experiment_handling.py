@@ -1,5 +1,3 @@
-
-
 """
 Run a computer model for various parameter combinations and sample sizes.
 
@@ -28,13 +26,11 @@ import glob
 import os
 import sys
 import traceback
+
 import numpy as np
 import pandas as pd
-from scipy.interpolate import interp1d
-
-import datetime  # for verbose info 
-
 from mpi4py import MPI
+from scipy.interpolate import interp1d
 
 from .safehdfstore import SafeHDFStore
 
@@ -144,10 +140,8 @@ class experiment_handling(object):
             self.amMaster = False
             self.amNode = True
 
-
         # only used in resave (to be deleted?)
         self.index_names = [self.index[key] for key in range(len(self.index))]
-
 
     @staticmethod
     def _treat_path(path_raw):
@@ -170,16 +164,17 @@ class experiment_handling(object):
     def _obtain_remaining_tasks(self):
         """Check what task are already computed and return the remaining ones.
         """
-        
-        # # # --- obtaining all tasks (at)
-        PCSs = {self.index[k]: np.array(self.parameter_combinations)[:, k]
-                .repeat(self.sample_size)
-                #.astype(type(self.parameter_combinations[:, 0][k]))
-                for k in self.index}
-        PCSs["sample"] = np.array(list(range(self.sample_size)) *
-            len(self.parameter_combinations)) 
 
-        at = pd.DataFrame(PCSs)
+        # # # --- obtaining all tasks (at)
+        param_combss = {self.index[k]: np.array(self.parameter_combinations)[:, k]
+                        .repeat(self.sample_size)
+                        # .astype(type(self.parameter_combinations[:, 0][k]))
+                        for k in self.index}
+        param_combss["sample"] = np.array(list(range(self.sample_size)) *
+                                          len(self.parameter_combinations))
+
+        at = pd.DataFrame(param_combss)
+
         for k in self.index:  # type conversion
             ty = type(self.parameter_combinations[0][k])
 
@@ -189,9 +184,14 @@ class experiment_handling(object):
             #     at[self.index[k]] = at[self.index[k]].map({"True": True,
             #                                                "False": False})
 
+            # pd.DataFrame(param_combss) seems to do weird typecastings,
+            # especially with boolean values.
+            # The following is supposed to correct this.
             if ty == bool:
                 at[self.index[k]] = at[self.index[k]].map({"True": True,
-                                                           "False": False})
+                                                           "False": False,
+                                                           1: True,
+                                                           0: False})
             elif ty == str:
                 at[self.index[k]] = at[self.index[k]].astype(ty)
             else:
@@ -221,13 +221,13 @@ class experiment_handling(object):
             ct_mix = ct_mix.drop("index", axis=1)
 
             # # # --- preparing all tasks (at)
-            at_mix = at.set_index(mixc) 
+            at_mix = at.set_index(mixc)
 
             # # # --- comparison --> remaining tasks (rt)
             ct_mix["__computed"] = 42
             at_mix["__computed"] = 42
             computed = at_mix.isin(ct_mix)  # via `isin` and multiindex
-            rt = computed.reset_index()  
+            rt = computed.reset_index()
             rt = rt[rt["__computed"] == False]
             tasks = rt.drop("__computed", axis=1)
 
@@ -268,7 +268,7 @@ class experiment_handling(object):
             #             print(finished_tasks.columns.names)
             #             print(pcs)
             #             raise
- 
+
             # # method 2: query hdf5 store
             # loads all results (one at time) into memory
             # (SLOWER FOR SMALL USE CASES)
@@ -292,7 +292,7 @@ class experiment_handling(object):
             #             tasks.append((pc, s))
             #         else:
             #             finished_tasks.append((pc, s))
-        
+
             # print(" ")
             # print("Obtaining remaining tasks took: ")
             # print(datetime.datetime.now() - now)
@@ -305,7 +305,6 @@ class experiment_handling(object):
 
         return tasks
 
-
     def _clean_up(self):
         """
         In the case the last run did not terminate correctly make things clean.
@@ -317,7 +316,6 @@ class experiment_handling(object):
             print("Cleaning... ")
             os.remove(self.path_raw + ".lock")
 
-
     def compute(self, skipbadruns=False):
         """
         Compute the experiment.
@@ -328,11 +326,6 @@ class experiment_handling(object):
 
         Parameters
         ----------
-        run_func : function
-            The function the executes the Model for a given set of Parameters.
-            The first P paramters need to fit to the parameter_combinations.
-            The last parameter of run_func has to be named filename
-            If run_func succeded, it returns >=0, else it returns < 0
         skipbadruns : bool (Default: False)
             If you don't want this function to check for bad runs that shall be
             recalculated, than set to "True". Possible reason: speed.
@@ -348,7 +341,7 @@ class experiment_handling(object):
                   + " single computations left")
 
             print("Saving rawdata at {}".format(self.path_raw))
-            
+
             tasks_completed = 0
             # = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = =
             # check if nodes are available. If not, do serial calculation.
@@ -375,9 +368,9 @@ class experiment_handling(object):
                                           "Calculating...")
             # = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = =
             else:
-            # = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = =
-                print("Splitting calculations to {} nodes."\
-                    .format(self.n_nodes))
+                # = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = =
+                print("Splitting calculations to {} nodes."
+                      .format(self.n_nodes))
                 sys.stdout.flush()
 
                 task_index = 0
@@ -408,7 +401,9 @@ class experiment_handling(object):
 
                         # store results
                         # completed runs send thier (task, result) as return
-                        self._obtain_store_function(n_return[0])(n_return[1])
+                        # This was moved to slaves due to unpickling errors when
+                        # sending large packages of data between nodes.
+                        # self._obtain_store_function(n_return[0])(n_return[1])
 
                         self._progress_report(tasks_completed, len(self.tasks),
                                               "Calculating...")
@@ -431,10 +426,17 @@ class experiment_handling(object):
                     params = task[list(self.index.values())].values
                     exit_status, result = self.run_func(*params)
                     if exit_status >= 0:
-                        self.comm.send((task, result), dest=self.master, tag=tags.DONE)
+                        # get storage function for finished task
+                        sf = self._obtain_store_function(task)
+                        # repeatedly try to store results until it works.
+                        while sf(result) < 0:
+                            pass
+                        # report to master that task is done
+                        self.comm.send(task, dest=self.master, tag=tags.DONE)
                     else:
+                        # report to master that task has failed
                         self.comm.send(task, dest=self.master, tag=tags.FAILED)
- 
+
                 elif tag == tags.EXIT:
                     break
 
@@ -442,15 +444,14 @@ class experiment_handling(object):
 
         self.comm.Barrier()
 
-
     def _get_store_index_names(self):
         """
         Obtain the names of parameters, sample and result index.
         """
         # TODO: take care for runfunc_output
-        param_names = self.run_func.__code__\
-            .co_varnames[:self.run_func.__code__.co_argcount]
-        mix_names = param_names + ("sample",) +\
+        param_names = self.run_func.__code__ \
+                          .co_varnames[:self.run_func.__code__.co_argcount]
+        mix_names = param_names + ("sample",) + \
             tuple(self.runfunc_output.index.names)
 
         return mix_names
@@ -469,7 +470,7 @@ class experiment_handling(object):
         # avoid int types in parameters
         # this is usefull if one parameter is declared as only ints but later
         # changed into float. This would result in an error without this:
-        
+
         # tmp = tuple(float(p) if type(p) == int else p for p in tsk[0])
         # tsk = (tmp, tsk[1])
         # =====================================================================
@@ -477,15 +478,11 @@ class experiment_handling(object):
         tdf = pd.DataFrame([tsk[0] + (tsk[1],)],
                            columns=list(self.index.values()) + ["sample"])
 
-        with SafeHDFStore(self.path_raw, mode="a") as store:
-            store.append("ct", tdf, format='table', data_columns=True)
-
-
         def store_func(run_func_result):
-            assert run_func_result.index.names ==\
-                self.runfunc_output.index.names
-            assert (run_func_result.columns ==\
-                self.runfunc_output.columns).all()
+            assert run_func_result.index.names == \
+                   self.runfunc_output.index.names
+            assert (run_func_result.columns ==
+                    self.runfunc_output.columns).all()
             # TODO: (maybe) sort columns alphabetically (depends on speed)
 
             # OLD
@@ -494,16 +491,22 @@ class experiment_handling(object):
             mix = pd.MultiIndex.from_product(
                 ID + [run_func_result.index.values],
                 names=self._get_store_index_names()
-                )
+            )
 
             mrfs = pd.DataFrame(data=run_func_result.values,
                                 index=mix, columns=run_func_result.columns)
             # appending to hdf5 store
-            with SafeHDFStore(self.path_raw, mode="a") as store:
-                store.append("dat", mrfs, format='table', data_columns=True)
+            try:
+                with SafeHDFStore(self.path_raw, mode="a") as store:
+                    store.append("dat", mrfs, format='table', data_columns=True)
+
+                with SafeHDFStore(self.path_raw, mode="a") as store:
+                    store.append("ct", tdf, format='table', data_columns=True)
+                return 1
+            except:
+                return -1
 
         return store_func
-
 
     def resave(self, eva, name, no_output=False):
         """
@@ -531,11 +534,11 @@ class experiment_handling(object):
         # First, prepare list of effective parameter combinations for MultiIndex
         if self.use_kwargs:
             eff_params = {self.index[k]:
-                          np.unique([p[self.index[k]] for p in self.kwparameter_combinations])
+                              np.unique([p[self.index[k]] for p in self.kwparameter_combinations])
                           for k in self.index.keys()}
         else:
             eff_params = {self.index[k]:
-                          np.unique([p[k] for p in self.parameter_combinations])
+                              np.unique([p[k] for p in self.parameter_combinations])
                           for k in self.index.keys()}
 
         # if eva returns a data frame,
@@ -581,8 +584,8 @@ class experiment_handling(object):
             # Create empty MultiIndex and Dataframe
 
             n_index_levels = len(self.index_names)
-            m_index = pd.MultiIndex(levels=[[]]*n_index_levels,
-                                    labels=[[]]*n_index_levels,
+            m_index = pd.MultiIndex(levels=[[]] * n_index_levels,
+                                    labels=[[]] * n_index_levels,
                                     names=self.index_names)
 
             df = pd.DataFrame(index=m_index)
@@ -673,7 +676,7 @@ class experiment_handling(object):
 
         self.comm.Barrier()
 
-#    @staticmethod
+    #    @staticmethod
     def _evaluate_eva(self, eva, key, fnames, msg=None):
         """Evaluate eva for given key and filenames.
 
@@ -731,7 +734,8 @@ class experiment_handling(object):
         eva_return: pandas Dataframe
 
         """
-        eva_return = self._evaluate_eva(eva, key, fnames, 'processing data for parameters {} with {} files'.format(p, len(fnames)))
+        eva_return = self._evaluate_eva(eva, key, fnames,
+                                        'processing data for parameters {} with {} files'.format(p, len(fnames)))
 
         if eva_return is None:
             return
@@ -746,12 +750,12 @@ class experiment_handling(object):
             # 2) add new levels to labels (being zero, since new
             # index levels have constant values
             index_labels = [[0] * label_length] \
-                * (len(self.index.keys()) + 1) \
-                + eva_return.index.labels
+                           * (len(self.index.keys()) + 1) \
+                           + eva_return.index.labels
             # 3) add new index levels to the old ones
             index_levels = [[key]] + [[list(p)[l]]
                                       for l in self.index.keys()] \
-                + eva_return.index.levels
+                           + eva_return.index.levels
             # 4) and fill it all into the multi index
             m_index = pd.MultiIndex(levels=index_levels,
                                     labels=index_labels,
@@ -830,7 +834,7 @@ class experiment_handling(object):
         """
         sys.stdout.write("\r")
         sys.stdout.flush()
-        sys.stdout.write("{} {:.2%}".format(msg, float(i)/float(loop_length)))
+        sys.stdout.write("{} {:.2%}".format(msg, float(i) / float(loop_length)))
         sys.stdout.flush()
 
         if i == loop_length - 1:
