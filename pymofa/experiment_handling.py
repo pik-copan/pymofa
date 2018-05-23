@@ -65,11 +65,11 @@ class experiment_handling(object):
     """Class doc string."""
 
     def __init__(self,
-                 run_func,
-                 runfunc_output,
-                 parameter_combinations,
-                 sample_size,
-                 path_raw):
+                 run_func: callable,
+                 runfunc_output: pd.DataFrame,
+                 parameter_combinations: list[tuple],
+                 sample_size: int,
+                 path_raw: str):
         """
         Set up the experiment handling class.
 
@@ -316,7 +316,7 @@ class experiment_handling(object):
             print("Cleaning... ")
             os.remove(self.path_raw + ".lock")
 
-    def compute(self, skipbadruns=False):
+    def compute(self, skipbadruns: bool=False):
         """
         Compute the experiment.
 
@@ -481,6 +481,10 @@ class experiment_handling(object):
         def store_func(run_func_result):
             assert run_func_result.index.names == \
                    self.runfunc_output.index.names
+
+            print(run_func_result.columns)
+            print(self.runfunc_output.columns)
+
             assert (run_func_result.columns ==
                     self.runfunc_output.columns).all()
             # TODO: (maybe) sort columns alphabetically (depends on speed)
@@ -842,7 +846,9 @@ class experiment_handling(object):
             sys.stdout.flush()
 
 
-def even_time_series_spacing(dfi, n, t0=None, t_n=None):
+def even_time_series_spacing(dfi: pd.DataFrame,
+                             n: int,
+                             t0: float=None, t_n: float=None) -> pd.DataFrame:
     """Interpolate irregularly spaced time series.
 
     To obtain regularly spaced data.
