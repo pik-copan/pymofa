@@ -84,6 +84,7 @@ tags = enum('START', 'READY', 'DONE', 'FAILED', 'EXIT')
 class experiment_handling(object):
     """Class doc string."""
 
+    # class variable to save killer to.
     killer = None
 
     def __init__(self,
@@ -124,7 +125,8 @@ class experiment_handling(object):
 
         print('initializing pymofa experiment handle')
 
-        # setup to watch for SIGTERM, but only, for the first class instanciation.
+        # setup to watch for SIGTERM
+        # save to class variable to only register signal once.
         if experiment_handling.killer is None:
             experiment_handling.killer = GracefulKiller()
 
@@ -521,7 +523,8 @@ class experiment_handling(object):
             mrfs = pd.DataFrame(data=run_func_result.values,
                                 index=mix, columns=run_func_result.columns)
 
-            # appending to hdf5 store, but only if the run is not about to be terminated.
+            # appending to hdf5 store,
+            # but only if the run is not about to be terminated as indicated by SIGTERM
             if not self.killer.kill_now:
                 print('saving, {}, {}'.format(self.killer.kill_now, self.killer))
                 try:
