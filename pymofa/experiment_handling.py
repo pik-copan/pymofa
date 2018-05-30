@@ -26,6 +26,7 @@ import glob
 import os
 import sys
 import traceback
+import signal
 
 import numpy as np
 import pandas as pd
@@ -34,6 +35,25 @@ from scipy.interpolate import interp1d
 
 from .safehdfstore import SafeHDFStore
 
+
+class GracefulKiller:
+    """simple class to handle SIGTERM acording to
+    https://stackoverflow.com/questions/18499497/how-to-process-sigterm-signal-gracefully
+    """
+
+    kill_now = False
+    first_killer = None
+
+    def __init__(self):
+        print('setting killer to {}'.format(self))
+        signal.signal(signal.SIGINT, self.exit_gracefully)
+        signal.signal(signal.SIGTERM, self.exit_gracefully)
+        if self.first_killer is None:
+            self.first_killer = self
+
+    def exit_gracefully(self, signum, frame):
+        print(' \ncaught SIGTERM, setting kill switch.')
+        self.kill_now = True
 
 def enum(*sequential, **named):
     """
@@ -63,6 +83,8 @@ tags = enum('START', 'READY', 'DONE', 'FAILED', 'EXIT')
 
 class experiment_handling(object):
     """Class doc string."""
+
+    killer = None
 
     def __init__(self,
                  run_func,
@@ -101,6 +123,10 @@ class experiment_handling(object):
         """
 
         print('initializing pymofa experiment handle')
+
+        # setup to watch for SIGTERM, but only, for the first class instanciation.
+        if experiment_handling.killer is None:
+            experiment_handling.killer = GracefulKiller()
 
         self.sample_size = sample_size
         self.parameter_combinations = parameter_combinations
@@ -494,16 +520,22 @@ class experiment_handling(object):
 
             mrfs = pd.DataFrame(data=run_func_result.values,
                                 index=mix, columns=run_func_result.columns)
-            # appending to hdf5 store
-            try:
-                with SafeHDFStore(self.path_raw, mode="a") as store:
-                    store.append("dat", mrfs, format='table', data_columns=True)
 
-                with SafeHDFStore(self.path_raw, mode="a") as store:
-                    store.append("ct", tdf, format='table', data_columns=True)
-                return 1
-            except:
-                return -1
+            # appending to hdf5 store, but only if the run is not about to be terminated.
+            if not self.killer.kill_now:
+                print('saving, {}, {}'.format(self.killer.kill_now, self.killer))
+                try:
+                    with SafeHDFStore(self.path_raw, mode="a") as store:
+                        store.append("dat", mrfs, format='table', data_columns=True)
+
+                    with SafeHDFStore(self.path_raw, mode="a") as store:
+                        store.append("ct", tdf, format='table', data_columns=True)
+                    return 1
+                except:
+                    return -1
+            else:
+                print('\n no writing due to kill switch', flush=True)
+                return -2
 
         return store_func
 
