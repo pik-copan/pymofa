@@ -64,3 +64,4 @@ target/
 
 # Misc
 *~
+*.idea

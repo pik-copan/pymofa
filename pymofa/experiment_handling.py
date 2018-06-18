@@ -1,5 +1,3 @@
-
-
 """
 Run a computer model for various parameter combinations and sample sizes.
 
@@ -22,18 +20,40 @@ resaving is parallelized such that parameter combinations are
 distributed amongs nodes. For small sample sizes, a serial
 implementation could be faster due to overhead...
 """
-from __future__ import print_function
+# from __future__ import print_function
 
 import glob
 import os
 import sys
 import traceback
+import signal
+
 import numpy as np
 import pandas as pd
+from mpi4py import MPI
 from scipy.interpolate import interp1d
 
-from mpi4py import MPI
+from .safehdfstore import SafeHDFStore
 
+
+class GracefulKiller:
+    """simple class to handle SIGTERM acording to
+    https://stackoverflow.com/questions/18499497/how-to-process-sigterm-signal-gracefully
+    """
+
+    kill_now = False
+    first_killer = None
+
+    def __init__(self):
+        print('setting killer to {}'.format(self))
+        signal.signal(signal.SIGINT, self.exit_gracefully)
+        signal.signal(signal.SIGTERM, self.exit_gracefully)
+        if self.first_killer is None:
+            self.first_killer = self
+
+    def exit_gracefully(self, signum, frame):
+        print(' \ncaught SIGTERM, setting kill switch.')
+        self.kill_now = True
 
 def enum(*sequential, **named):
     """
@@ -64,8 +84,15 @@ tags = enum('START', 'READY', 'DONE', 'FAILED', 'EXIT')
 class experiment_handling(object):
     """Class doc string."""
 
-    def __init__(self, sample_size, parameter_combinations, index, path_raw,
-                 path_res='./data/', use_kwargs=False):
+    # class variable to save killer to.
+    killer = None
+
+    def __init__(self,
+                 run_func: callable,
+                 runfunc_output: pd.DataFrame,
+                 parameter_combinations: list[tuple],
+                 sample_size: int,
+                 path_raw: str):
         """
         Set up the experiment handling class.
 
@@ -79,45 +106,42 @@ class experiment_handling(object):
 
         Parameters
         ----------
-        sample_size : int
-            number of runs for each parameter combination e.g.
-            size of the ensemble for statistical evaluation
+        run_func : func
+            function to set up and execute the pymofa experiment
+        runfunc_output : pd.DataFrame
+            dataframe with columns and index named as the run_func will store
+            its results. May contain no values.
         parameter_combinations: list[tuples]
             list of parameter combinations that are stored in
             tuples. Number of Parameters for each combination
             has to fit the number of input Parameters of the
             run function.
-        index : dict
-            indicating the varied Parameters as
-            {position in parameter_combinations: name}
-            is needed for post processing to create the
-            multi index containing the variable Parameters
+        sample_size : int
+            number of runs for each parameter combination e.g.
+            size of the ensemble for statistical evaluation
         path_raw : string
             absolute path to the raw data of the computations
-        path_res : string
-            absolute path to the post processed data
-
         """
 
         print('initializing pymofa experiment handle')
 
+        # setup to watch for SIGTERM
+        # save to class variable to only register signal once.
+        if experiment_handling.killer is None:
+            experiment_handling.killer = GracefulKiller()
+
         self.sample_size = sample_size
-
-        self.kwparameter_combinations = \
-            [{index[i]: params[i]
-              for i in index.keys()}
-             for params in parameter_combinations]
-
         self.parameter_combinations = parameter_combinations
-        self.use_kwargs = use_kwargs
-        self.index = index
-        self.index_names = [self.index[key] for key in range(len(self.index))]
 
-        # add "/" to paths if missing
-        self.path_raw = path_raw + "/" if not path_raw.endswith("/") else \
-            path_raw
-        self.path_res = path_res + "/" if not path_res.endswith("/") else \
-            path_res
+        self.run_func = run_func
+        self.runfunc_output = runfunc_output
+        # TODO: make runfunc_output optional by obtaining the output by
+        #       executing the run_func (maybe this is not possible)
+
+        self.index = {i: run_func.__code__.co_varnames[i]
+                      for i in range(run_func.__code__.co_argcount)}
+
+        self.path_raw = self._treat_path(path_raw)
 
         # load mpi4py MPI environment and get size and ranks
         self.comm = MPI.COMM_WORLD
@@ -135,27 +159,192 @@ class experiment_handling(object):
             self.amMaster = True
             self.amNode = False
             print('detected {} nodes in MPI environment'.format(self.size))
+
+            # if master collect the remaining tasks
+            self._clean_up()
+            self.tasks = self._obtain_remaining_tasks()
+
         else:
             self.amMaster = False
             self.amNode = True
 
-        # create list of tasks (parameter_combs*sample_size)
-        # and paths to save the results.
-        self.tasks = []
+        # only used in resave (to be deleted?)
+        self.index_names = [self.index[key] for key in range(len(self.index))]
 
-        for s in range(self.sample_size):
-            for p, kwp in zip(self.parameter_combinations,
-                              self.kwparameter_combinations):
-                filename = self.path_raw + self._get_id(p, s)
-                if not os.path.exists(filename):
-                    if self.use_kwargs:
-                        self.tasks.append((kwp, filename))
-                    else:
-                        self.tasks.append((p, filename))
+    @staticmethod
+    def _treat_path(path_raw):
 
-        self.filenames = []
+        if path_raw[-1] == "/":
+            real_path_raw = path_raw[0:-1] + ".h5"
+        elif path_raw[-3:] == ".h5":
+            real_path_raw = path_raw
+        else:
+            real_path_raw = path_raw + ".h5"
+        real_path_raw = os.path.abspath(real_path_raw)
 
-    def compute(self, run_func, skipbadruns=False):
+        # check, if path exists. If not, create.
+        dirpath = os.path.dirname(real_path_raw)
+        if not os.path.exists(dirpath):
+            os.makedirs(dirpath)
+
+        return real_path_raw
+
+    def _obtain_remaining_tasks(self):
+        """Check what task are already computed and return the remaining ones.
+        """
+
+        # # # --- obtaining all tasks (at)
+        param_combss = {self.index[k]: np.array(self.parameter_combinations)[:, k]
+                        .repeat(self.sample_size)
+                        # .astype(type(self.parameter_combinations[:, 0][k]))
+                        for k in self.index}
+        param_combss["sample"] = np.array(list(range(self.sample_size)) *
+                                          len(self.parameter_combinations))
+
+        at = pd.DataFrame(param_combss)
+
+        for k in self.index:  # type conversion
+            ty = type(self.parameter_combinations[0][k])
+
+            # if ty != bool:                       
+            #     at[self.index[k]] = at[self.index[k]].astype(ty)
+            # else:
+            #     at[self.index[k]] = at[self.index[k]].map({"True": True,
+            #                                                "False": False})
+
+            # pd.DataFrame(param_combss) seems to do weird typecastings,
+            # especially with boolean values.
+            # The following is supposed to correct this.
+            if ty == bool:
+                at[self.index[k]] = at[self.index[k]].map({"True": True,
+                                                           "False": False,
+                                                           1: True,
+                                                           0: False})
+            elif ty == str:
+                at[self.index[k]] = at[self.index[k]].astype(ty)
+            else:
+                at[self.index[k]] = pd.to_numeric(at[self.index[k]])
+            at["sample"] = pd.to_numeric(at["sample"])
+
+        tasks = at
+
+        # check wheter the file exists at all
+        # OLD
+        # if not os.path.exists(self.path_raw):
+        #     # if not existend - all given task have to be computed
+        #     tasks = [(pc, s) for s in range(self.sample_size)
+        #              for pc in self.parameter_combinations]
+        #     finished_tasks = []
+        # else:
+        if os.path.exists(self.path_raw):
+            # file exits - check for already computed tasks
+
+            # METHOD 0) hopefully even faster (incl. restructering of `tasks`)
+            # # # --- obtaining computed tasks (ct)
+            with SafeHDFStore(self.path_raw) as store:
+                ct = store["ct"]  # computed tasks
+            mixc = list(self.index.values()) + ["sample"]
+            ct = ct.reset_index()
+            ct_mix = ct.set_index(mixc)
+            ct_mix = ct_mix.drop("index", axis=1)
+
+            # # # --- preparing all tasks (at)
+            at_mix = at.set_index(mixc)
+
+            # # # --- comparison --> remaining tasks (rt)
+            ct_mix["__computed"] = 42
+            at_mix["__computed"] = 42
+            computed = at_mix.isin(ct_mix)  # via `isin` and multiindex
+            rt = computed.reset_index()
+            rt = rt[rt["__computed"] == False]
+            tasks = rt.drop("__computed", axis=1)
+
+            # method 1: task dataframe
+            # only loads index into memeory
+            # MUCH FASTER (test for small use cases)
+            # PRODUCE MEMOREY ERROR FOR LARGE RAW DATA (line 189)
+            # 1) create task df
+            # index_values = []
+            # with SafeHDFStore(self.path_raw) as store:
+            #     for p in self.index.values():
+            #         index_values.append(store.select_column("dat", p))
+            #     index_values.append(store.select_column("dat", "sample"))
+            # finished_tasks = pd.DataFrame(index_values).T.drop_duplicates()
+            # comp_tasks = finished_tasks.values
+            # tasks = []
+
+            # # 1) obtain computed tasks (alternative)
+            # with SafeHDFStore(self.path_raw) as store:
+            #     ct = store["ct"]
+            # comp_tasks = ct.values
+            # # print("boooja")
+
+            # # 2) go through parameter combinations and sample and check
+            # for i, pc in enumerate(self.parameter_combinations):
+            #     for j, s in enumerate(range(self.sample_size)):
+            #         self._progress_report(
+            #             i*self.sample_size + j,
+            #             len(self.parameter_combinations)*self.sample_size,
+            #             "Obtaining already computed tasks...")
+            #         pcs = pc + (s, )
+            #         try:
+            #             if not (pcs == comp_tasks).all(axis=1).any():
+            #                 # taks not yet computed
+            #                 tasks.append((pc, s))
+            #         except:
+            #             print(comp_tasks.shape)
+            #             print(finished_tasks.columns.names)
+            #             print(pcs)
+            #             raise
+
+            # # method 2: query hdf5 store
+            # loads all results (one at time) into memory
+            # (SLOWER FOR SMALL USE CASES)
+            # EVEN SLOWER -TOO SLOW- FOR LARGER CASES
+            # tasks = []
+            # finished_tasks = []
+            # #
+            # now = datetime.datetime.now()
+            # #
+            # for pc in self.parameter_combinations:
+            #     for s in range(self.sample_size):
+            #         wherequery = ""
+            #         for pn, pv in zip(self.index.values(), pc):
+            #             wherequery += pn + "=" + str(pv) + " & "
+            #         wherequery += "sample=" + str(s)
+
+            #         with pd.HDFStore(self.path_raw) as store:
+            #             dat = store.select("dat", wherequery)
+            #         if len(dat) == 0:
+            #             # no data found - adding to tasks
+            #             tasks.append((pc, s))
+            #         else:
+            #             finished_tasks.append((pc, s))
+
+            # print(" ")
+            # print("Obtaining remaining tasks took: ")
+            # print(datetime.datetime.now() - now)
+            # print(" ")
+
+        # give brief feedback about remaining work.
+        print(str(len(tasks)) + " of "
+              + str(len(self.parameter_combinations) * self.sample_size)
+              + " single computations left")
+
+        return tasks
+
+    def _clean_up(self):
+        """
+        In the case the last run did not terminate correctly make things clean.
+
+        Checks wheter there is lock file for the hdf5 database.
+        If yes it removes it.
+        """
+        if os.path.exists(self.path_raw + ".lock"):
+            print("Cleaning... ")
+            os.remove(self.path_raw + ".lock")
+
+    def compute(self, skipbadruns: bool=False):
         """
         Compute the experiment.
 
@@ -165,73 +354,91 @@ class experiment_handling(object):
 
         Parameters
         ----------
-        run_func : function
-            The function the executes the Model for a given set of Parameters.
-            The first P paramters need to fit to the parameter_combinations.
-            The last parameter of run_func has to be named filename
-            If run_func succeded, it returns >=0, else it returns < 0
         skipbadruns : bool (Default: False)
             If you don't want this function to check for bad runs that shall be
             recalculated, than set to "True". Possible reason: speed.
 
         """
-        assert (callable(run_func)), "run_func must be callable"
-        assert (isinstance(skipbadruns, bool)), "scipbadruns must be boolean"
-        if self.amMaster:
-            # check, if path exists. If not, create.
-            if not os.path.exists(self.path_raw):
-                os.makedirs(self.path_raw)
+        assert (isinstance(skipbadruns, bool)), "scipbadruns must be boolean " \
+                                                "but is {}".format(type(skipbadruns))
 
+        if self.amMaster:
             # give brief feedback about remaining work.
             print(str(len(self.tasks)) + " of "
                   + str(len(self.parameter_combinations) * self.sample_size)
                   + " single computations left")
 
+            print("Saving rawdata at {}".format(self.path_raw))
+
+            tasks_completed = 0
+            # = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = =
             # check if nodes are available. If not, do serial calculation.
+            # = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = =
             if self.n_nodes < 1:
                 print("Only one node available. No parallel execution.")
+                # OLD for task in self.tasks:
+                # NEW 
+                for t in range(len(self.tasks)):
+                    # NEW
+                    task = self.tasks.iloc[t]
+                    # OLD (params, sample) = task
+                    # NEW
+                    params = task[list(self.index.values())].values
 
-                for task in self.tasks:
-                    (params, filename) = task
-                    result = -1
-                    while result < 0:
-                        if self.use_kwargs:
-                            result = run_func(filename=filename, **params)
-                        else:
-                            result = run_func(*params, filename=filename)
+                    exit_status = -1
+                    while exit_status < 0:
+                        # TODO: care for never finishing tasks
+                        exit_status, result = self.run_func(*params)
 
-            print("Splitting calculations to {} nodes.".format(self.n_nodes))
-            sys.stdout.flush()
-
-            task_index = 0
-            tasks_completed = 0
-            closed_nodes = 0
-            while closed_nodes < self.n_nodes:
-                n_return = self.comm.recv(source=MPI.ANY_SOURCE,
-                                          tag=MPI.ANY_TAG, status=self.status)
-                source = self.status.Get_source()
-                tag = self.status.Get_tag()
-                if tag == tags.READY:
-                    # node is ready, can take new task
-                    if task_index < len(self.tasks):
-                        self.comm.send(self.tasks[task_index], dest=source,
-                                       tag=tags.START)
-                        task_index += 1
-                    else:
-                        self.comm.send(None, dest=source, tag=tags.EXIT)
-                elif tag == tags.FAILED:
-                    # node failed to complete.
-                    # retry (failed runs send their task as return)
-                    self.comm.send(n_return, dest=source, tag=tags.START)
-                elif tag == tags.DONE:
-                    # node succeeded
                     tasks_completed += 1
+                    self._obtain_store_function(task)(result)
                     self._progress_report(tasks_completed, len(self.tasks),
                                           "Calculating...")
-                elif tag == tags.EXIT:
-                    # node completed all tasks. close
-                    closed_nodes += 1
-            print("Calculating 0 ...done.")
+            # = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = =
+            else:
+                # = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = =
+                print("Splitting calculations to {} nodes."
+                      .format(self.n_nodes))
+                sys.stdout.flush()
+
+                task_index = 0
+                closed_nodes = 0
+                while closed_nodes < self.n_nodes:
+                    n_return = self.comm.recv(source=MPI.ANY_SOURCE,
+                                              tag=MPI.ANY_TAG,
+                                              status=self.status)
+                    source = self.status.Get_source()
+                    tag = self.status.Get_tag()
+
+                    if tag == tags.READY:
+                        # node is ready, can take new task
+                        if task_index < len(self.tasks):
+                            self.comm.send(self.tasks.iloc[task_index], dest=source,
+                                           tag=tags.START)
+                            task_index += 1
+                        else:
+                            self.comm.send(None, dest=source, tag=tags.EXIT)
+
+                    elif tag == tags.FAILED:  # node failed to complete.
+                        # retry (failed runs send their task as return)
+                        self.comm.send(n_return, dest=source, tag=tags.START)
+
+                    elif tag == tags.DONE:
+                        # node succeeded
+                        tasks_completed += 1
+
+                        # store results
+                        # completed runs send thier (task, result) as return
+                        # This was moved to slaves due to unpickling errors when
+                        # sending large packages of data between nodes.
+                        # self._obtain_store_function(n_return[0])(n_return[1])
+
+                        self._progress_report(tasks_completed, len(self.tasks),
+                                              "Calculating...")
+                    elif tag == tags.EXIT:
+                        # node completed all tasks. close
+                        closed_nodes += 1
+            print("\nCalculattion done.")
 
         if self.amNode:
             # Nodes work as follows:
@@ -242,23 +449,103 @@ class experiment_handling(object):
                                       status=self.status)
                 tag = self.status.Get_tag()
 
-                if tag == tags.START:
-                    # go work:
-                    (params, filename) = task
-                    if self.use_kwargs:
-                        result = run_func(filename=filename, **params)
+                if tag == tags.START:  # go work:
+                    # (params, filename) = task
+                    params = task[list(self.index.values())].values
+                    exit_status, result = self.run_func(*params)
+                    if exit_status >= 0:
+                        # get storage function for finished task
+                        sf = self._obtain_store_function(task)
+                        # repeatedly try to store results until it works.
+                        while sf(result) < 0:
+                            pass
+                        # report to master that task is done
+                        self.comm.send(task, dest=self.master, tag=tags.DONE)
                     else:
-                        result = run_func(*params, filename=filename)
-                    if result >= 0:
-                        self.comm.send(result, dest=self.master, tag=tags.DONE)
-                    else:
+                        # report to master that task has failed
                         self.comm.send(task, dest=self.master, tag=tags.FAILED)
+
                 elif tag == tags.EXIT:
                     break
 
             self.comm.send(None, dest=self.master, tag=tags.EXIT)
 
         self.comm.Barrier()
+
+    def _get_store_index_names(self):
+        """
+        Obtain the names of parameters, sample and result index.
+        """
+        # TODO: take care for runfunc_output
+        param_names = self.run_func.__code__ \
+                          .co_varnames[:self.run_func.__code__.co_argcount]
+        mix_names = param_names + ("sample",) + \
+            tuple(self.runfunc_output.index.names)
+
+        return mix_names
+
+    def _obtain_store_function(self, task):
+        """
+        Obtain a function to be given to the run_func to store the results.
+        """
+
+        # task.name indicates the index number of the all tasks (at) dataframe
+        # hereby I refere to the initial parameter_combs to avoid type problems
+        tsk = (self.parameter_combinations[int(task.name / self.sample_size)],
+               task.name % self.sample_size)
+
+        # for future release: =================================================
+        # avoid int types in parameters
+        # this is usefull if one parameter is declared as only ints but later
+        # changed into float. This would result in an error without this:
+
+        # tmp = tuple(float(p) if type(p) == int else p for p in tsk[0])
+        # tsk = (tmp, tsk[1])
+        # =====================================================================
+
+        tdf = pd.DataFrame([tsk[0] + (tsk[1],)],
+                           columns=list(self.index.values()) + ["sample"])
+
+        def store_func(run_func_result):
+            assert run_func_result.index.names == \
+                   self.runfunc_output.index.names
+
+            print(run_func_result.columns)
+            print(self.runfunc_output.columns)
+
+            assert (run_func_result.columns ==
+                    self.runfunc_output.columns).all()
+            # TODO: (maybe) sort columns alphabetically (depends on speed)
+
+            # OLD
+            ID = [[p] for p in tsk[0]] + [[tsk[1]]]  # last one is sample
+
+            mix = pd.MultiIndex.from_product(
+                ID + [run_func_result.index.values],
+                names=self._get_store_index_names()
+            )
+
+            mrfs = pd.DataFrame(data=run_func_result.values,
+                                index=mix, columns=run_func_result.columns)
+
+            # appending to hdf5 store,
+            # but only if the run is not about to be terminated as indicated by SIGTERM
+            if not self.killer.kill_now:
+                print('saving, {}, {}'.format(self.killer.kill_now, self.killer))
+                try:
+                    with SafeHDFStore(self.path_raw, mode="a") as store:
+                        store.append("dat", mrfs, format='table', data_columns=True)
+
+                    with SafeHDFStore(self.path_raw, mode="a") as store:
+                        store.append("ct", tdf, format='table', data_columns=True)
+                    return 1
+                except:
+                    return -1
+            else:
+                print('\n no writing due to kill switch', flush=True)
+                return -2
+
+        return store_func
 
     def resave(self, eva, name, no_output=False):
         """
@@ -286,11 +573,11 @@ class experiment_handling(object):
         # First, prepare list of effective parameter combinations for MultiIndex
         if self.use_kwargs:
             eff_params = {self.index[k]:
-                          np.unique([p[self.index[k]] for p in self.kwparameter_combinations])
+                              np.unique([p[self.index[k]] for p in self.kwparameter_combinations])
                           for k in self.index.keys()}
         else:
             eff_params = {self.index[k]:
-                          np.unique([p[k] for p in self.parameter_combinations])
+                              np.unique([p[k] for p in self.parameter_combinations])
                           for k in self.index.keys()}
 
         # if eva returns a data frame,
@@ -336,8 +623,8 @@ class experiment_handling(object):
             # Create empty MultiIndex and Dataframe
 
             n_index_levels = len(self.index_names)
-            m_index = pd.MultiIndex(levels=[[]]*n_index_levels,
-                                    labels=[[]]*n_index_levels,
+            m_index = pd.MultiIndex(levels=[[]] * n_index_levels,
+                                    labels=[[]] * n_index_levels,
                                     names=self.index_names)
 
             df = pd.DataFrame(index=m_index)
@@ -428,7 +715,7 @@ class experiment_handling(object):
 
         self.comm.Barrier()
 
-#    @staticmethod
+    #    @staticmethod
     def _evaluate_eva(self, eva, key, fnames, msg=None):
         """Evaluate eva for given key and filenames.
 
@@ -486,7 +773,8 @@ class experiment_handling(object):
         eva_return: pandas Dataframe
 
         """
-        eva_return = self._evaluate_eva(eva, key, fnames, 'processing data for parameters {} with {} files'.format(p, len(fnames)))
+        eva_return = self._evaluate_eva(eva, key, fnames,
+                                        'processing data for parameters {} with {} files'.format(p, len(fnames)))
 
         if eva_return is None:
             return
@@ -501,12 +789,12 @@ class experiment_handling(object):
             # 2) add new levels to labels (being zero, since new
             # index levels have constant values
             index_labels = [[0] * label_length] \
-                * (len(self.index.keys()) + 1) \
-                + eva_return.index.labels
+                           * (len(self.index.keys()) + 1) \
+                           + eva_return.index.labels
             # 3) add new index levels to the old ones
             index_levels = [[key]] + [[list(p)[l]]
                                       for l in self.index.keys()] \
-                + eva_return.index.levels
+                           + eva_return.index.levels
             # 4) and fill it all into the multi index
             m_index = pd.MultiIndex(levels=index_levels,
                                     labels=index_labels,
@@ -585,7 +873,7 @@ class experiment_handling(object):
         """
         sys.stdout.write("\r")
         sys.stdout.flush()
-        sys.stdout.write("{} {:.2%}".format(msg, float(i)/float(loop_length)))
+        sys.stdout.write("{} {:.2%}".format(msg, float(i) / float(loop_length)))
         sys.stdout.flush()
 
         if i == loop_length - 1:
@@ -593,7 +881,9 @@ class experiment_handling(object):
             sys.stdout.flush()
 
 
-def even_time_series_spacing(dfi, n, t0=None, t_n=None):
+def even_time_series_spacing(dfi: pd.DataFrame,
+                             n: int,
+                             t0: float=None, t_n: float=None) -> pd.DataFrame:
     """Interpolate irregularly spaced time series.
 
     To obtain regularly spaced data.
