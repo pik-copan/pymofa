@@ -315,7 +315,7 @@ class experiment_handling(object):
 
             # if the eva returns a dataframe, add names to eff_params
             if isinstance(eva_return, pd.core.frame.DataFrame) and \
-                    not isinstance(eva_return.index, pd.core.index.MultiIndex):
+                    not isinstance(eva_return.index, pd.MultiIndex):
 
                 eff_params['timesteps'] = eva_return.index.values
                 eff_params['observables'] = eva_return.columns.values
@@ -337,7 +337,7 @@ class experiment_handling(object):
 
             n_index_levels = len(self.index_names)
             m_index = pd.MultiIndex(levels=[[]]*n_index_levels,
-                                    labels=[[]]*n_index_levels,
+                                    codes=[[]]*n_index_levels,
                                     names=self.index_names)
 
             df = pd.DataFrame(index=m_index)
@@ -496,33 +496,33 @@ class experiment_handling(object):
             # create data frame with additional levels in index
             eva_return = eva_return.stack(level=0)
             # therefore, first create the multi index.
-            # 1) find length of labels
-            label_length = len(eva_return.index.labels[0])
-            # 2) add new levels to labels (being zero, since new
+            # 1) find length of codes
+            codes_length = len(eva_return.index.codes[0])
+            # 2) add new levels to codes (being zero, since new
             # index levels have constant values
-            index_labels = [[0] * label_length] \
+            index_codes = [[0] * codes_length] \
                 * (len(self.index.keys()) + 1) \
-                + eva_return.index.labels
+                + eva_return.index.codes
             # 3) add new index levels to the old ones
             index_levels = [[key]] + [[list(p)[l]]
                                       for l in self.index.keys()] \
                 + eva_return.index.levels
             # 4) and fill it all into the multi index
             m_index = pd.MultiIndex(levels=index_levels,
-                                    labels=index_labels,
+                                    codes=index_codes,
                                     names=['key'] + list(index_names))
             # then create the data frame
             return pd.DataFrame(index=m_index,
                                 data=eva_return.values)
         elif not process_df:
             index_names = self.index_names
-            # same as above but without levels and labels from eva return
-            label_length = 1
-            index_labels = [[0] * label_length] * (len(self.index.keys()) + 1)
+            # same as above but without levels and codes from eva return
+            codes_length = 1
+            index_codes = [[0] * codes_length] * (len(self.index.keys()) + 1)
             index_levels = [[key]] + [[list(p)[l]] for l in self.index.keys()]
             tmp_index_names = ['key'] + list(index_names)
             m_index = pd.MultiIndex(levels=index_levels,
-                                    labels=index_labels,
+                                    codes=index_codes,
                                     names=tmp_index_names)
             return pd.DataFrame(index=m_index,
                                 data=[eva_return])
