@@ -396,7 +396,7 @@ class experiment_handling(object):
             if not no_output:
                 df = df.unstack(level='key')
                 df.columns = df.columns.droplevel()
-                df.to_pickle(self.path_res + name)
+                df.to_pickle(self.path_res + name + '.pkl')
             print('\nDone')
 
         if self.amNode:
