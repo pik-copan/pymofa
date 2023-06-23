@@ -362,7 +362,7 @@ class experiment_handling(object):
                                                           fnames=fnames,
                                                           process_df=process_df)
                     if not no_output:
-                        df = df.append(other=eva_return, verify_integrity=True)
+                        df = pd.concat([df, eva_return], verify_integrity=True)
 
             # If nodes are available, distribute work amongst nodes.
 
@@ -387,7 +387,7 @@ class experiment_handling(object):
                 elif tag == tags.DONE:
                     (mx, key, eva_return) = data
                     if not no_output:
-                        df = df.append(eva_return)
+                        df = pd.concat([df, eva_return], verify_integrity=True)
                     tasks_completed += 1
                     self._progress_report(tasks_completed, n_tasks,
                                           "Post-processing...")
